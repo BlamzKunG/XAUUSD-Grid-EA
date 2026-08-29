@@ -173,6 +173,7 @@ void ManageBasketExits();
 void ManageGridExpansion();
 void CheckNewEntries();
 bool ProcessSafetyGuards();
+void CloseBasketPositions(ENUM_POSITION_TYPE posType);
 void CloseAllPositions();
 void CutWorstOrder();
 double CalculateAccountDrawdownPercent();
@@ -1156,7 +1157,7 @@ void RenderHUD()
 
    string dash = "";
    dash += "=========================================================\n";
-   dash += StringFormat("   XAUUSD ADAPTIVE MEAN-REVERSION GRID EA  v1.00\n");
+   dash += "   XAUUSD ADAPTIVE MEAN-REVERSION GRID EA  v1.00\n";
    dash += StringFormat("   Status: [%s] | Magic: %d | Symbol: %s\n", status, InpMagicNumber, _Symbol);
    dash += "=========================================================\n";
    dash += StringFormat(" [Market Regime] H1 ADX: %.1f (Max: %.1f) | M15 ATR: $%.2f | Step: $%.2f\n", adxVal, InpMaxADXForEntry, atrUSD, stepUSD);

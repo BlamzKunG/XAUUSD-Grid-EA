@@ -1,0 +1,69 @@
+;============================================================
+; XAUUSD Adaptive Mean-Reversion Grid EA - Small Account ($500)
+; Focus: Capital preservation, tight level limit, conservative risk
+;============================================================
+InpMagicNumber=20250301
+InpTradeComment=XAU_MR_500
+InpAllowNewEntries=true
+
+;--- Multi-TF Filters
+InpEntryTF=15 ; PERIOD_M15
+InpTrendTF=16385 ; PERIOD_H1
+InpEMA_Fast=50
+InpEMA_Slow=200
+InpMaxEMADiffPoints=1200
+InpADX_Period=14
+InpMaxADXForEntry=20.0
+InpTrendEscapeADX=26.0
+InpRSI_Period=14
+InpBuyRSI_Level=28.0
+InpSellRSI_Level=72.0
+InpBB_Period=20
+InpBB_Deviation=2.0
+
+;--- Dynamic Grid Engine
+InpATR_Period=14
+InpGridATRMultiplier=1.6
+InpMinGridStepUSD=5.0
+InpMaxGridStepUSD=12.0
+InpMaxGridLevels=3
+
+;--- Lot Management
+InpLotStrategy=0 ; Fixed Lot
+InpInitialLot=0.01
+InpLotMultiplier=1.00
+InpMaxSingleLot=0.01
+InpMaxExposureLots=0.03
+InpRiskPerBasketPct=2.5
+
+;--- Basket TP
+InpTPMode=0 ; Hybrid
+InpBasketTPPercent=0.40
+InpBasketTPUSD=5.0
+InpBasketTP_ATR_Factor=0.30
+InpUseBasketTrailing=true
+InpTrailStartUSD=4.0
+InpTrailStepUSD=1.5
+
+;--- Risk Management
+InpEquityStopPercent=5.0
+InpUseEmergencyATR_SL=true
+InpEmergencySL_ATR_Mult=2.5
+InpUseTrendEscape=true
+InpTrendEscapeLossCutUSD=20.0
+InpMarginLevelFreeze=300.0
+InpMarginEmergencyCut=150.0
+InpDailyLossLimitPct=2.5
+InpDailyProfitTargetPct=1.0
+InpCooldownMinutes=45
+
+;--- Time & Spread Filters
+InpUseSpreadFilter=true
+InpMaxSpreadPoints=35
+InpUseTimeFilter=true
+InpStartHour=8
+InpEndHour=19
+InpAvoidAsianNight=true
+InpFridayCloseEarly=true
+InpFridayStopHour=17
+InpShowDashboard=true

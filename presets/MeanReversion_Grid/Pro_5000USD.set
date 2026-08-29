@@ -1,0 +1,69 @@
+;============================================================
+; XAUUSD Adaptive Mean-Reversion Grid EA - Pro Account ($5,000+)
+; Focus: Optimized throughput, wider market participation
+;============================================================
+InpMagicNumber=20250301
+InpTradeComment=XAU_MR_5K
+InpAllowNewEntries=true
+
+;--- Multi-TF Filters
+InpEntryTF=15 ; PERIOD_M15
+InpTrendTF=16385 ; PERIOD_H1
+InpEMA_Fast=50
+InpEMA_Slow=200
+InpMaxEMADiffPoints=1800
+InpADX_Period=14
+InpMaxADXForEntry=24.0
+InpTrendEscapeADX=28.0
+InpRSI_Period=14
+InpBuyRSI_Level=30.0
+InpSellRSI_Level=70.0
+InpBB_Period=20
+InpBB_Deviation=2.0
+
+;--- Dynamic Grid Engine
+InpATR_Period=14
+InpGridATRMultiplier=1.5
+InpMinGridStepUSD=4.0
+InpMaxGridStepUSD=12.0
+InpMaxGridLevels=5
+
+;--- Lot Management
+InpLotStrategy=1 ; Mild Multiplier
+InpInitialLot=0.02
+InpLotMultiplier=1.20
+InpMaxSingleLot=0.06
+InpMaxExposureLots=0.20
+InpRiskPerBasketPct=3.0
+
+;--- Basket TP
+InpTPMode=0 ; Hybrid
+InpBasketTPPercent=0.60
+InpBasketTPUSD=30.0
+InpBasketTP_ATR_Factor=0.35
+InpUseBasketTrailing=true
+InpTrailStartUSD=20.0
+InpTrailStepUSD=5.0
+
+;--- Risk Management
+InpEquityStopPercent=8.0
+InpUseEmergencyATR_SL=true
+InpEmergencySL_ATR_Mult=3.5
+InpUseTrendEscape=true
+InpTrendEscapeLossCutUSD=80.0
+InpMarginLevelFreeze=200.0
+InpMarginEmergencyCut=120.0
+InpDailyLossLimitPct=3.0
+InpDailyProfitTargetPct=2.0
+InpCooldownMinutes=30
+
+;--- Time & Spread Filters
+InpUseSpreadFilter=true
+InpMaxSpreadPoints=45
+InpUseTimeFilter=true
+InpStartHour=7
+InpEndHour=21
+InpAvoidAsianNight=true
+InpFridayCloseEarly=true
+InpFridayStopHour=18
+InpShowDashboard=true

@@ -1,0 +1,67 @@
+;============================================================
+; XAUUSD Advanced Grid EA - Balanced Preset (Standard)
+; Recommended for: Standard XAUUSD Grid Trading ($1,000+)
+; Focus: Steady monthly return with controlled risk buffers
+;============================================================
+InpMagicNumber=888123
+InpTradeComment=XAU_Bal
+InpGridDirection=0
+InpAllowNewGrids=true
+
+;--- Market Filters
+InpUseSpreadFilter=true
+InpMaxSpreadPoints=45
+InpUseATRFilter=true
+InpATRTimeframe=16385 ; PERIOD_H1
+InpATRPeriod=14
+InpMaxATR_Points=600
+InpTrendFilterMode=2 ; TREND_FILTER_SIDEWAY
+InpTrendTimeframe=16385 ; PERIOD_H1
+InpEMA_Period=200
+InpMaxEMADistancePoints=1200
+InpUseADXFilter=true
+InpADXPeriod=14
+InpMaxADXThreshold=30.0
+InpUseSessionFilter=true
+InpSessionStartHour=7
+InpSessionEndHour=21
+InpAvoidAsianNight=true
+InpFridayCloseEarly=true
+InpFridayStopHour=18
+
+;--- Grid Engine
+InpLotMode=0 ; Fixed Lot
+InpInitialLot=0.01
+InpRiskPercent=0.5
+InpLotMultiplier=1.25
+InpMaxSingleLot=0.50
+InpMaxTotalLots=2.50
+InpBaseGridDistancePts=250
+InpGridStepMultiplier=1.10
+InpUseDynamicATRStep=true
+InpDynamicATRMultiplier=0.50
+InpMaxGridLevels=8
+
+;--- Basket Profit & Exits
+InpBasketTP_USD=15.0
+InpBasketTP_Points=100
+InpBasketTP_Percent=0.0
+InpUseBasketTrailing=true
+InpTrailStartUSD=12.0
+InpTrailStepUSD=4.0
+
+;--- Risk Management
+InpMaxDrawdownPercent=20.0
+InpDrawdownFreezePct=12.0
+InpMarginLevelFreeze=200.0
+InpMarginEmergencyCut=130.0
+InpMaxDailyLossUSD=100.0
+InpDailyProfitTargetUSD=150.0
+InpSendAlertOnGuard=true
+
+;--- Recovery & Hedge
+InpRecoveryMode=1 ; RECOVERY_MODE_HEDGE
+InpHedgeLotRatio=1.0
+InpMaxGridHoldHours=48
+InpStaleTargetReduction=0.50
+InpShowDashboard=true

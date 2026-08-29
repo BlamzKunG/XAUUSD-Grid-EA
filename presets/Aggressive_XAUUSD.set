@@ -1,0 +1,67 @@
+;============================================================
+; XAUUSD Advanced Grid EA - Aggressive Preset (High Yield)
+; Recommended for: Experienced traders / Prop firm challenges
+; Focus: Higher profit frequency, tighter grid spacing
+;============================================================
+InpMagicNumber=888123
+InpTradeComment=XAU_Aggr
+InpGridDirection=0
+InpAllowNewGrids=true
+
+;--- Market Filters
+InpUseSpreadFilter=true
+InpMaxSpreadPoints=55
+InpUseATRFilter=true
+InpATRTimeframe=16385 ; PERIOD_H1
+InpATRPeriod=14
+InpMaxATR_Points=750
+InpTrendFilterMode=0 ; TREND_FILTER_OFF
+InpTrendTimeframe=16385
+InpEMA_Period=200
+InpMaxEMADistancePoints=1500
+InpUseADXFilter=false
+InpADXPeriod=14
+InpMaxADXThreshold=35.0
+InpUseSessionFilter=true
+InpSessionStartHour=6
+InpSessionEndHour=22
+InpAvoidAsianNight=false
+InpFridayCloseEarly=true
+InpFridayStopHour=20
+
+;--- Grid Engine
+InpLotMode=0
+InpInitialLot=0.02
+InpRiskPercent=1.0
+InpLotMultiplier=1.30
+InpMaxSingleLot=1.00
+InpMaxTotalLots=5.00
+InpBaseGridDistancePts=200
+InpGridStepMultiplier=1.05
+InpUseDynamicATRStep=true
+InpDynamicATRMultiplier=0.40
+InpMaxGridLevels=10
+
+;--- Basket Profit & Exits
+InpBasketTP_USD=25.0
+InpBasketTP_Points=120
+InpBasketTP_Percent=0.0
+InpUseBasketTrailing=true
+InpTrailStartUSD=20.0
+InpTrailStepUSD=6.0
+
+;--- Risk Management
+InpMaxDrawdownPercent=25.0
+InpDrawdownFreezePct=15.0
+InpMarginLevelFreeze=180.0
+InpMarginEmergencyCut=120.0
+InpMaxDailyLossUSD=200.0
+InpDailyProfitTargetUSD=300.0
+InpSendAlertOnGuard=true
+
+;--- Recovery & Hedge
+InpRecoveryMode=1
+InpHedgeLotRatio=1.0
+InpMaxGridHoldHours=72
+InpStaleTargetReduction=0.50
+InpShowDashboard=true

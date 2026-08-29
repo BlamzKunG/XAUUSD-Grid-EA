@@ -1,0 +1,67 @@
+;============================================================
+; XAUUSD Advanced Grid EA - Conservative Preset (Low Risk)
+; Recommended for: Accounts starting from $1,000 - $3,000
+; Focus: Capital preservation, high filter strictness, low DD
+;============================================================
+InpMagicNumber=888123
+InpTradeComment=XAU_Cons
+InpGridDirection=0
+InpAllowNewGrids=true
+
+;--- Market Filters
+InpUseSpreadFilter=true
+InpMaxSpreadPoints=35
+InpUseATRFilter=true
+InpATRTimeframe=16385 ; PERIOD_H1
+InpATRPeriod=14
+InpMaxATR_Points=500
+InpTrendFilterMode=2 ; TREND_FILTER_SIDEWAY
+InpTrendTimeframe=16385 ; PERIOD_H1
+InpEMA_Period=200
+InpMaxEMADistancePoints=1000
+InpUseADXFilter=true
+InpADXPeriod=14
+InpMaxADXThreshold=25.0
+InpUseSessionFilter=true
+InpSessionStartHour=8
+InpSessionEndHour=20
+InpAvoidAsianNight=true
+InpFridayCloseEarly=true
+InpFridayStopHour=17
+
+;--- Grid Engine
+InpLotMode=0 ; Fixed Lot
+InpInitialLot=0.01
+InpRiskPercent=0.3
+InpLotMultiplier=1.15
+InpMaxSingleLot=0.20
+InpMaxTotalLots=1.00
+InpBaseGridDistancePts=300
+InpGridStepMultiplier=1.15
+InpUseDynamicATRStep=true
+InpDynamicATRMultiplier=0.60
+InpMaxGridLevels=6
+
+;--- Basket Profit & Exits
+InpBasketTP_USD=10.0
+InpBasketTP_Points=80
+InpBasketTP_Percent=0.0
+InpUseBasketTrailing=true
+InpTrailStartUSD=8.0
+InpTrailStepUSD=3.0
+
+;--- Risk Management
+InpMaxDrawdownPercent=15.0
+InpDrawdownFreezePct=8.0
+InpMarginLevelFreeze=300.0
+InpMarginEmergencyCut=150.0
+InpMaxDailyLossUSD=50.0
+InpDailyProfitTargetUSD=80.0
+InpSendAlertOnGuard=true
+
+;--- Recovery & Hedge
+InpRecoveryMode=1 ; RECOVERY_MODE_HEDGE
+InpHedgeLotRatio=1.0
+InpMaxGridHoldHours=36
+InpStaleTargetReduction=0.50
+InpShowDashboard=true

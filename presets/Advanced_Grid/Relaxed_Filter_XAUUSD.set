@@ -1,0 +1,66 @@
+;============================================================
+; XAUUSD Advanced Grid EA - Relaxed Filter Preset
+; Focus: Higher entry frequency, relaxed market filters
+;============================================================
+InpMagicNumber=888123
+InpTradeComment=XAU_Relax
+InpGridDirection=0
+InpAllowNewGrids=true
+
+;--- Market Filters (Relaxed)
+InpUseSpreadFilter=true
+InpMaxSpreadPoints=60
+InpUseATRFilter=true
+InpATRTimeframe=16385 ; PERIOD_H1
+InpATRPeriod=14
+InpMaxATR_Points=900
+InpTrendFilterMode=0 ; TREND_FILTER_OFF
+InpTrendTimeframe=16385 ; PERIOD_H1
+InpEMA_Period=200
+InpMaxEMADistancePoints=2500
+InpUseADXFilter=false
+InpADXPeriod=14
+InpMaxADXThreshold=40.0
+InpUseSessionFilter=true
+InpSessionStartHour=6
+InpSessionEndHour=22
+InpAvoidAsianNight=false
+InpFridayCloseEarly=true
+InpFridayStopHour=20
+
+;--- Grid Engine
+InpLotMode=0
+InpInitialLot=0.01
+InpRiskPercent=0.5
+InpLotMultiplier=1.15
+InpMaxSingleLot=0.50
+InpMaxTotalLots=2.50
+InpBaseGridDistancePts=200
+InpGridStepMultiplier=1.10
+InpUseDynamicATRStep=true
+InpDynamicATRMultiplier=0.45
+InpMaxGridLevels=8
+
+;--- Basket Profit & Exits
+InpBasketTP_USD=12.0
+InpBasketTP_Points=80
+InpBasketTP_Percent=0.0
+InpUseBasketTrailing=true
+InpTrailStartUSD=10.0
+InpTrailStepUSD=3.0
+
+;--- Risk Management
+InpMaxDrawdownPercent=20.0
+InpDrawdownFreezePct=12.0
+InpMarginLevelFreeze=200.0
+InpMarginEmergencyCut=130.0
+InpMaxDailyLossUSD=100.0
+InpDailyProfitTargetUSD=150.0
+InpSendAlertOnGuard=true
+
+;--- Recovery & Hedge
+InpRecoveryMode=1
+InpHedgeLotRatio=1.0
+InpMaxGridHoldHours=48
+InpStaleTargetReduction=0.50
+InpShowDashboard=true

@@ -5,10 +5,9 @@
 //+------------------------------------------------------------------+
 #property copyright   "Copyright 2026, BlamzKunG"
 #property link        "https://github.com/BlamzKunG/XAUUSD-Grid-EA"
-#property version     "2.00"
-#property description "Professional 4-Layer Grid Trading System for XAUUSD (Gold)"
-#property description "Features: Market Filters (ATR/EMA/ADX/Session), Safe Lot Sizing,"
-#property description "Multi-tiered Drawdown Guards, Basket Breakeven & Auto-Hedge Recovery"
+#property version     "2.10"
+#property description "High-Performance 4-Layer Grid Trading System for XAUUSD (Gold)"
+#property description "Optimized: Single-Pass Basket Stats, Cached Indicators & Throttled HUD"
 #property strict
 
 //--- Standard Library Includes
@@ -49,6 +48,37 @@ enum ENUM_RECOVERY_MODE
 };
 
 //+------------------------------------------------------------------+
+//| STRUCTURES                                                       |
+//+------------------------------------------------------------------+
+struct SBasketStats
+{
+   int      count;
+   double   total_lots;
+   double   profit;
+   double   breakeven;
+   double   lowest_price;
+   double   highest_price;
+   double   last_lot;
+   datetime oldest_time;
+   datetime newest_time;
+   ulong    hedge_ticket;
+
+   void Reset()
+   {
+      count         = 0;
+      total_lots    = 0.0;
+      profit        = 0.0;
+      breakeven     = 0.0;
+      lowest_price  = DBL_MAX;
+      highest_price = 0.0;
+      last_lot      = 0.0;
+      oldest_time   = 0;
+      newest_time   = 0;
+      hedge_ticket  = 0;
+   }
+};
+
+//+------------------------------------------------------------------+
 //| INPUT PARAMETERS                                                 |
 //+------------------------------------------------------------------+
 
@@ -67,21 +97,21 @@ input int                  InpMaxSpreadPoints      = 45;             // [Spread]
 input bool                 InpUseATRFilter         = true;           // [ATR] Enable High Volatility Filter
 input ENUM_TIMEFRAMES      InpATRTimeframe         = PERIOD_H1;      // [ATR] ATR Timeframe
 input int                  InpATRPeriod            = 14;             // [ATR] ATR Period
-input double               InpMaxATR_Points        = 600;            // [ATR] Max ATR Value in Points (Pause if exceeded)
+input double               InpMaxATR_Points        = 750;            // [ATR] Max ATR Value in Points (Pause if exceeded)
 
 input ENUM_TREND_FILTER_MODE InpTrendFilterMode    = TREND_FILTER_SIDEWAY; // [Trend] Trend / Regime Filter
 input ENUM_TIMEFRAMES      InpTrendTimeframe       = PERIOD_H1;      // [Trend] Trend Filter Timeframe
 input int                  InpEMA_Period           = 200;            // [Trend] EMA Period
-input int                  InpMaxEMADistancePoints = 1200;           // [Trend] Max Distance from EMA for Sideway (Points)
+input int                  InpMaxEMADistancePoints = 1500;           // [Trend] Max Distance from EMA for Sideway (Points)
 
 input bool                 InpUseADXFilter         = true;           // [ADX] Enable ADX Trend Strength Filter
 input int                  InpADXPeriod            = 14;             // [ADX] ADX Period
-input double               InpMaxADXThreshold      = 30.0;           // [ADX] Max ADX (Pause if ADX > threshold, Trend too strong)
+input double               InpMaxADXThreshold      = 32.0;           // [ADX] Max ADX (Pause if ADX > threshold, Trend too strong)
 
 input bool                 InpUseSessionFilter     = true;           // [Session] Enable Trading Time Filter
 input int                  InpSessionStartHour     = 7;              // [Session] Start Hour (Server Time, e.g. 07:00)
 input int                  InpSessionEndHour       = 21;             // [Session] End Hour (Server Time, e.g. 21:00)
-input bool                 InpAvoidAsianNight      = true;           // [Session] Avoid Low-Liquidity Asian Midnight (22:00-06:00)
+input bool                 InpAvoidAsianNight      = false;          // [Session] Avoid Low-Liquidity Asian Midnight (22:00-06:00)
 input bool                 InpFridayCloseEarly     = true;           // [Session] Stop Opening on Friday Afternoon
 input int                  InpFridayStopHour       = 18;             // [Session] Friday Stop Hour
 
@@ -90,7 +120,7 @@ input group "=== [3] Grid Engine Layer ==="
 input ENUM_LOT_MODE        InpLotMode              = LOT_MODE_FIXED; // Lot Sizing Mode
 input double               InpInitialLot           = 0.01;           // Initial Lot Size (if Fixed)
 input double               InpRiskPercent          = 0.5;            // Risk Percent of Equity (if Auto Lot)
-input double               InpLotMultiplier        = 1.25;           // Lot Multiplier per Level (Recommended: 1.1 - 1.3)
+input double               InpLotMultiplier        = 1.20;           // Lot Multiplier per Level (Recommended: 1.1 - 1.25)
 input double               InpMaxSingleLot         = 0.50;           // Max Lot Size per Single Order
 input double               InpMaxTotalLots         = 2.50;           // Max Cumulative Lots per Basket
 
@@ -127,7 +157,7 @@ input double               InpHedgeLotRatio        = 1.0;            // Hedge Vo
 input int                  InpMaxGridHoldHours     = 48;             // Max Holding Time for Grid Basket (Hours before Target Reduction)
 input double               InpStaleTargetReduction = 0.50;           // Target Profit Reduction Multiplier for Stale Grids (e.g. 50%)
 
-//=== 7. DASHBOARD & UI ===
+//=== 7. DASHBOARD & VISUALS ===
 input group "=== [7] Dashboard & Visuals ==="
 input bool                 InpShowDashboard        = true;           // Show On-Chart HUD Dashboard
 
@@ -144,10 +174,17 @@ int            g_h_atr           = INVALID_HANDLE;
 int            g_h_ema           = INVALID_HANDLE;
 int            g_h_adx           = INVALID_HANDLE;
 
+// Cached Indicator Data (Updated on New Bar / Throttled)
+datetime       g_last_indicator_time = 0;
+double         g_cached_atr_points   = 0.0;
+double         g_cached_ema_val      = 0.0;
+double         g_cached_adx_val      = 0.0;
+
 // Daily Tracking
 datetime       g_last_day_reset  = 0;
-double         g_day_start_equity= 0;
-double         g_realized_pl_day = 0;
+datetime       g_last_deal_scan  = 0;
+double         g_day_start_equity= 0.0;
+double         g_realized_pl_day = 0.0;
 bool           g_daily_lockout   = false;
 bool           g_emergency_locked= false;
 
@@ -155,13 +192,14 @@ bool           g_emergency_locked= false;
 double         g_buy_peak_profit = 0.0;
 double         g_sell_peak_profit= 0.0;
 
-// Hedge Order Tracking
-ulong          g_buy_hedge_ticket = 0;
-ulong          g_sell_hedge_ticket= 0;
+// Single-Pass Basket Stats
+SBasketStats   g_buy_stats;
+SBasketStats   g_sell_stats;
 
-// Forward declarations
+// Forward Declarations
+void UpdateBasketStatistics();
+void RefreshIndicatorCache();
 bool CheckMarketFilters(ENUM_POSITION_TYPE direction, string &failReason);
-double GetCurrentATRPoints();
 int CalculateGridStep(int currentLevel);
 void ManageInitialGridEntries();
 void ManageOpenGrids();
@@ -173,19 +211,11 @@ void CloseHedgePosition(ENUM_POSITION_TYPE originalPosType);
 bool IsGridStale(ENUM_POSITION_TYPE posType);
 double CalculateInitialLot();
 double NormalizeLot(double lot);
-int CountGridPositions(ENUM_POSITION_TYPE posType);
-double CalculateBasketProfit(ENUM_POSITION_TYPE posType);
-double CalculateBasketBreakeven(ENUM_POSITION_TYPE posType, double &totalLots);
-double GetTotalBasketLots(ENUM_POSITION_TYPE posType);
-double GetLowestEntryPrice(ENUM_POSITION_TYPE posType);
-double GetHighestEntryPrice(ENUM_POSITION_TYPE posType);
-double GetLastOrderLot(ENUM_POSITION_TYPE posType);
-datetime GetOldestPositionOpenTime(ENUM_POSITION_TYPE posType);
 void CloseBasket(ENUM_POSITION_TYPE posType);
 void CloseAllEAOrders();
 void CutWorstLosingPosition();
 double CalculateAccountDrawdownPercent();
-void CheckDailyReset();
+void CheckDailyReset(bool forceRecalculate);
 void ResetDailyMetrics();
 void RenderDashboard();
 
@@ -236,16 +266,18 @@ int OnInit()
    }
 
    ResetDailyMetrics();
+   RefreshIndicatorCache();
+   UpdateBasketStatistics();
+
+   // Set timer for dashboard rendering & safety monitor (1 second)
    EventSetTimer(1);
 
    Print("=====================================================");
-   Print(" [XAUUSD Advanced Grid EA v2.00] Successfully Initialized");
-   Print(" Symbol: ", _Symbol, " | Magic: ", InpMagicNumber, " | Digits: ", _Digits, " | Point: ", _Point);
-   Print(" Market Filters: ATR=", InpUseATRFilter, " | Trend=", EnumToString(InpTrendFilterMode), " | Session=", InpUseSessionFilter);
-   Print(" Safety Guards: Max DD%=", InpMaxDrawdownPercent, " | Margin Freeze%=", InpMarginLevelFreeze);
+   Print(" [XAUUSD Advanced Grid EA v2.10] Optimized Engine Initialized");
+   Print(" Symbol: ", _Symbol, " | Magic: ", InpMagicNumber);
    Print("=====================================================");
 
-   if(InpShowDashboard)
+   if(InpShowDashboard && !MQLInfoInteger(MQL_OPTIMIZATION))
       RenderDashboard();
 
    return INIT_SUCCEEDED;
@@ -257,7 +289,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   
+
    if(g_h_atr != INVALID_HANDLE) IndicatorRelease(g_h_atr);
    if(g_h_ema != INVALID_HANDLE) IndicatorRelease(g_h_ema);
    if(g_h_adx != INVALID_HANDLE) IndicatorRelease(g_h_adx);
@@ -266,46 +298,172 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| Expert tick function                                             |
+//| Expert tick function (High Speed)                                |
 //+------------------------------------------------------------------+
 void OnTick()
 {
    g_symbol.RefreshRates();
 
-   CheckDailyReset();
-
-   if(ProcessDrawdownGuards())
+   // 1. Refresh Indicator Cache on new H1/M15 bar
+   datetime currentBarTime = iTime(_Symbol, InpATRTimeframe, 0);
+   if(currentBarTime != g_last_indicator_time)
    {
-      if(InpShowDashboard) RenderDashboard();
-      return;
+      g_last_indicator_time = currentBarTime;
+      RefreshIndicatorCache();
+      CheckDailyReset(true);
    }
 
-   ManageBasketExits();
-   ManageRecoveryLayer();
-   ManageOpenGrids();
-   ManageInitialGridEntries();
+   // 2. Update Basket Statistics in Single Pass
+   UpdateBasketStatistics();
 
-   if(InpShowDashboard)
-      RenderDashboard();
+   // 3. Process Drawdown Guards
+   if(ProcessDrawdownGuards())
+      return;
+
+   // 4. Manage Basket Exits
+   ManageBasketExits();
+
+   // 5. Manage Recovery / Hedge Layer
+   ManageRecoveryLayer();
+
+   // 6. Manage Open Grid Orders
+   ManageOpenGrids();
+
+   // 7. Manage Initial Entries
+   ManageInitialGridEntries();
 }
 
 //+------------------------------------------------------------------+
-//| Timer Event Function (1-second tick for HUD & safety)            |
+//| Timer Event Function (Throttled UI & Periodic Safety Checks)      |
 //+------------------------------------------------------------------+
 void OnTimer()
 {
    g_symbol.RefreshRates();
-   CheckDailyReset();
+   UpdateBasketStatistics();
    ProcessDrawdownGuards();
-   
-   if(InpShowDashboard)
+
+   if(InpShowDashboard && !MQLInfoInteger(MQL_OPTIMIZATION))
       RenderDashboard();
+}
+
+//+------------------------------------------------------------------+
+//| SINGLE-PASS BASKET STATISTICS CALCULATION                        |
+//+------------------------------------------------------------------+
+void UpdateBasketStatistics()
+{
+   g_buy_stats.Reset();
+   g_sell_stats.Reset();
+
+   double sumBuyPriceLot = 0.0;
+   double sumSellPriceLot = 0.0;
+
+   int totalPositions = PositionsTotal();
+   for(int i = totalPositions - 1; i >= 0; i--)
+   {
+      if(g_pos.SelectByIndex(i))
+      {
+         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
+         {
+            ENUM_POSITION_TYPE pType = g_pos.PositionType();
+            string comment = g_pos.Comment();
+            double volume  = g_pos.Volume();
+            double price   = g_pos.PriceOpen();
+            double pnl     = g_pos.Profit() + g_pos.Swap() + g_pos.Commission();
+            datetime time  = g_pos.Time();
+
+            if(pType == POSITION_TYPE_BUY)
+            {
+               if(StringFind(comment, "Hedge") >= 0)
+               {
+                  g_sell_stats.hedge_ticket = g_pos.Ticket();
+               }
+               else
+               {
+                  g_buy_stats.count++;
+                  g_buy_stats.total_lots += volume;
+                  g_buy_stats.profit += pnl;
+                  sumBuyPriceLot += (volume * price);
+
+                  if(price < g_buy_stats.lowest_price) g_buy_stats.lowest_price = price;
+                  if(price > g_buy_stats.highest_price) g_buy_stats.highest_price = price;
+
+                  if(g_buy_stats.oldest_time == 0 || time < g_buy_stats.oldest_time)
+                     g_buy_stats.oldest_time = time;
+                  if(time > g_buy_stats.newest_time)
+                  {
+                     g_buy_stats.newest_time = time;
+                     g_buy_stats.last_lot = volume;
+                  }
+               }
+            }
+            else if(pType == POSITION_TYPE_SELL)
+            {
+               if(StringFind(comment, "Hedge") >= 0)
+               {
+                  g_buy_stats.hedge_ticket = g_pos.Ticket();
+               }
+               else
+               {
+                  g_sell_stats.count++;
+                  g_sell_stats.total_lots += volume;
+                  g_sell_stats.profit += pnl;
+                  sumSellPriceLot += (volume * price);
+
+                  if(price < g_sell_stats.lowest_price) g_sell_stats.lowest_price = price;
+                  if(price > g_sell_stats.highest_price) g_sell_stats.highest_price = price;
+
+                  if(g_sell_stats.oldest_time == 0 || time < g_sell_stats.oldest_time)
+                     g_sell_stats.oldest_time = time;
+                  if(time > g_sell_stats.newest_time)
+                  {
+                     g_sell_stats.newest_time = time;
+                     g_sell_stats.last_lot = volume;
+                  }
+               }
+            }
+         }
+      }
+   }
+
+   if(g_buy_stats.total_lots > 0)
+      g_buy_stats.breakeven = NormalizeDouble(sumBuyPriceLot / g_buy_stats.total_lots, _Digits);
+   if(g_sell_stats.total_lots > 0)
+      g_sell_stats.breakeven = NormalizeDouble(sumSellPriceLot / g_sell_stats.total_lots, _Digits);
+
+   if(g_buy_stats.lowest_price == DBL_MAX) g_buy_stats.lowest_price = 0.0;
+   if(g_sell_stats.lowest_price == DBL_MAX) g_sell_stats.lowest_price = 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| REFRESH INDICATOR CACHE                                          |
+//+------------------------------------------------------------------+
+void RefreshIndicatorCache()
+{
+   if(g_h_atr != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_atr, 0, 0, 1, buf) > 0)
+         g_cached_atr_points = buf[0] / _Point;
+   }
+
+   if(g_h_ema != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_ema, 0, 0, 1, buf) > 0)
+         g_cached_ema_val = buf[0];
+   }
+
+   if(g_h_adx != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_adx, 0, 0, 1, buf) > 0)
+         g_cached_adx_val = buf[0];
+   }
 }
 
 //+------------------------------------------------------------------+
 //| LAYER 1: MARKET FILTER LAYER FUNCTIONS                          |
 //+------------------------------------------------------------------+
-
 bool CheckMarketFilters(ENUM_POSITION_TYPE direction, string &failReason)
 {
    failReason = "PASS";
@@ -326,6 +484,7 @@ bool CheckMarketFilters(ENUM_POSITION_TYPE direction, string &failReason)
       return false;
    }
 
+   // Spread Filter
    if(InpUseSpreadFilter)
    {
       long currentSpread = g_symbol.Spread();
@@ -336,6 +495,7 @@ bool CheckMarketFilters(ENUM_POSITION_TYPE direction, string &failReason)
       }
    }
 
+   // Session & Time Filter
    if(InpUseSessionFilter)
    {
       MqlDateTime dt;
@@ -360,66 +520,50 @@ bool CheckMarketFilters(ENUM_POSITION_TYPE direction, string &failReason)
       }
    }
 
-   if(InpUseATRFilter && g_h_atr != INVALID_HANDLE)
+   // ATR Volatility Filter
+   if(InpUseATRFilter && g_cached_atr_points > InpMaxATR_Points)
    {
-      double atrBuf[1];
-      if(CopyBuffer(g_h_atr, 0, 0, 1, atrBuf) > 0)
+      failReason = StringFormat("ATR_TOO_HIGH (%.0f > %.0f)", g_cached_atr_points, InpMaxATR_Points);
+      return false;
+   }
+
+   // ADX Trend Strength Filter
+   if(InpUseADXFilter && g_cached_adx_val > InpMaxADXThreshold)
+   {
+      failReason = StringFormat("ADX_TOO_STRONG (%.1f > %.1f)", g_cached_adx_val, InpMaxADXThreshold);
+      return false;
+   }
+
+   // Trend / EMA 200 Filter
+   if(InpTrendFilterMode != TREND_FILTER_OFF && g_cached_ema_val > 0)
+   {
+      double currentPrice = (direction == POSITION_TYPE_BUY) ? g_symbol.Ask() : g_symbol.Bid();
+      double distPoints = MathAbs(currentPrice - g_cached_ema_val) / _Point;
+
+      if(InpTrendFilterMode == TREND_FILTER_EMA)
       {
-         double atrPoints = atrBuf[0] / _Point;
-         if(atrPoints > InpMaxATR_Points)
+         if(direction == POSITION_TYPE_BUY && currentPrice < g_cached_ema_val)
          {
-            failReason = StringFormat("ATR_TOO_HIGH (%.0f > %.0f)", atrPoints, InpMaxATR_Points);
+            failReason = "BELOW_EMA200 (BEARISH)";
+            return false;
+         }
+         if(direction == POSITION_TYPE_SELL && currentPrice > g_cached_ema_val)
+         {
+            failReason = "ABOVE_EMA200 (BULLISH)";
+            return false;
+         }
+      }
+      else if(InpTrendFilterMode == TREND_FILTER_SIDEWAY)
+      {
+         if(distPoints > InpMaxEMADistancePoints)
+         {
+            failReason = StringFormat("EMA_DIST_HIGH (%.0f > %d)", distPoints, InpMaxEMADistancePoints);
             return false;
          }
       }
    }
 
-   if(InpUseADXFilter && g_h_adx != INVALID_HANDLE)
-   {
-      double adxBuf[1];
-      if(CopyBuffer(g_h_adx, 0, 0, 1, adxBuf) > 0)
-      {
-         if(adxBuf[0] > InpMaxADXThreshold)
-         {
-            failReason = StringFormat("ADX_TOO_STRONG (%.1f > %.1f)", adxBuf[0], InpMaxADXThreshold);
-            return false;
-         }
-      }
-   }
-
-   if(InpTrendFilterMode != TREND_FILTER_OFF && g_h_ema != INVALID_HANDLE)
-   {
-      double emaBuf[1];
-      if(CopyBuffer(g_h_ema, 0, 0, 1, emaBuf) > 0)
-      {
-         double emaVal = emaBuf[0];
-         double currentPrice = (direction == POSITION_TYPE_BUY) ? g_symbol.Ask() : g_symbol.Bid();
-         double distPoints = MathAbs(currentPrice - emaVal) / _Point;
-
-         if(InpTrendFilterMode == TREND_FILTER_EMA)
-         {
-            if(direction == POSITION_TYPE_BUY && currentPrice < emaVal)
-            {
-               failReason = "BELOW_EMA200 (BEARISH)";
-               return false;
-            }
-            if(direction == POSITION_TYPE_SELL && currentPrice > emaVal)
-            {
-               failReason = "ABOVE_EMA200 (BULLISH)";
-               return false;
-            }
-         }
-         else if(InpTrendFilterMode == TREND_FILTER_SIDEWAY)
-         {
-            if(distPoints > InpMaxEMADistancePoints)
-            {
-               failReason = StringFormat("EMA_DIST_HIGH (%.0f > %d)", distPoints, InpMaxEMADistancePoints);
-               return false;
-            }
-         }
-      }
-   }
-
+   // Margin Guard
    double marginLevel = g_account.MarginLevel();
    if(marginLevel > 0 && marginLevel < InpMarginLevelFreeze)
    {
@@ -427,6 +571,7 @@ bool CheckMarketFilters(ENUM_POSITION_TYPE direction, string &failReason)
       return false;
    }
 
+   // Drawdown Freeze Check
    double currentDD = CalculateAccountDrawdownPercent();
    if(currentDD >= InpDrawdownFreezePct)
    {
@@ -437,27 +582,17 @@ bool CheckMarketFilters(ENUM_POSITION_TYPE direction, string &failReason)
    return true;
 }
 
-double GetCurrentATRPoints()
-{
-   if(g_h_atr == INVALID_HANDLE) return 0.0;
-   double atrBuf[1];
-   if(CopyBuffer(g_h_atr, 0, 0, 1, atrBuf) > 0)
-      return atrBuf[0] / _Point;
-   return 0.0;
-}
-
+//+------------------------------------------------------------------+
+//| Calculate Dynamic Grid Step                                      |
+//+------------------------------------------------------------------+
 int CalculateGridStep(int currentLevel)
 {
    int baseStep = InpBaseGridDistancePts;
 
-   if(InpUseDynamicATRStep && g_h_atr != INVALID_HANDLE)
+   if(InpUseDynamicATRStep && g_cached_atr_points > 0)
    {
-      double atrPoints = GetCurrentATRPoints();
-      if(atrPoints > 0)
-      {
-         int dynamicStep = (int)(atrPoints * InpDynamicATRMultiplier);
-         baseStep = MathMax(InpBaseGridDistancePts, dynamicStep);
-      }
+      int dynamicStep = (int)(g_cached_atr_points * InpDynamicATRMultiplier);
+      baseStep = MathMax(InpBaseGridDistancePts, dynamicStep);
    }
 
    double expandedStep = (double)baseStep;
@@ -472,24 +607,17 @@ int CalculateGridStep(int currentLevel)
 //+------------------------------------------------------------------+
 //| LAYER 2: GRID ENGINE LAYER FUNCTIONS                            |
 //+------------------------------------------------------------------+
-
 void ManageInitialGridEntries()
 {
-   int buyCount = CountGridPositions(POSITION_TYPE_BUY);
-   int sellCount = CountGridPositions(POSITION_TYPE_SELL);
-
-   if(buyCount == 0 && (InpGridDirection == GRID_DIR_BOTH || InpGridDirection == GRID_DIR_BUY_ONLY || InpGridDirection == GRID_DIR_AUTO_TREND))
+   // Buy Grid Initial Entry
+   if(g_buy_stats.count == 0 && (InpGridDirection == GRID_DIR_BOTH || InpGridDirection == GRID_DIR_BUY_ONLY || InpGridDirection == GRID_DIR_AUTO_TREND))
    {
       string failReason;
       if(CheckMarketFilters(POSITION_TYPE_BUY, failReason))
       {
          bool allowBuy = true;
-         if(InpGridDirection == GRID_DIR_AUTO_TREND && g_h_ema != INVALID_HANDLE)
-         {
-            double emaBuf[1];
-            if(CopyBuffer(g_h_ema, 0, 0, 1, emaBuf) > 0)
-               allowBuy = (g_symbol.Ask() >= emaBuf[0]);
-         }
+         if(InpGridDirection == GRID_DIR_AUTO_TREND && g_cached_ema_val > 0)
+            allowBuy = (g_symbol.Ask() >= g_cached_ema_val);
 
          if(allowBuy)
          {
@@ -500,18 +628,15 @@ void ManageInitialGridEntries()
       }
    }
 
-   if(sellCount == 0 && (InpGridDirection == GRID_DIR_BOTH || InpGridDirection == GRID_DIR_SELL_ONLY || InpGridDirection == GRID_DIR_AUTO_TREND))
+   // Sell Grid Initial Entry
+   if(g_sell_stats.count == 0 && (InpGridDirection == GRID_DIR_BOTH || InpGridDirection == GRID_DIR_SELL_ONLY || InpGridDirection == GRID_DIR_AUTO_TREND))
    {
       string failReason;
       if(CheckMarketFilters(POSITION_TYPE_SELL, failReason))
       {
          bool allowSell = true;
-         if(InpGridDirection == GRID_DIR_AUTO_TREND && g_h_ema != INVALID_HANDLE)
-         {
-            double emaBuf[1];
-            if(CopyBuffer(g_h_ema, 0, 0, 1, emaBuf) > 0)
-               allowSell = (g_symbol.Bid() <= emaBuf[0]);
-         }
+         if(InpGridDirection == GRID_DIR_AUTO_TREND && g_cached_ema_val > 0)
+            allowSell = (g_symbol.Bid() <= g_cached_ema_val);
 
          if(allowSell)
          {
@@ -532,44 +657,40 @@ void ManageOpenGrids()
    if(CalculateAccountDrawdownPercent() >= InpDrawdownFreezePct)
       return;
 
-   int buyCount = CountGridPositions(POSITION_TYPE_BUY);
-   if(buyCount > 0 && buyCount < InpMaxGridLevels)
+   // 1. Manage BUY Grid Expansion
+   if(g_buy_stats.count > 0 && g_buy_stats.count < InpMaxGridLevels)
    {
-      double lowestBuy = GetLowestEntryPrice(POSITION_TYPE_BUY);
-      int stepPoints = CalculateGridStep(buyCount);
-      double targetNextBuyPrice = lowestBuy - (stepPoints * _Point);
+      int stepPoints = CalculateGridStep(g_buy_stats.count);
+      double targetNextBuyPrice = g_buy_stats.lowest_price - (stepPoints * _Point);
 
       if(g_symbol.Ask() <= targetNextBuyPrice)
       {
-         double lastLot = GetLastOrderLot(POSITION_TYPE_BUY);
+         double lastLot = (g_buy_stats.last_lot > 0) ? g_buy_stats.last_lot : InpInitialLot;
          double nextLot = NormalizeLot(lastLot * InpLotMultiplier);
          nextLot = MathMin(nextLot, InpMaxSingleLot);
 
-         double currentTotalLots = GetTotalBasketLots(POSITION_TYPE_BUY);
-         if((currentTotalLots + nextLot) <= InpMaxTotalLots)
+         if((g_buy_stats.total_lots + nextLot) <= InpMaxTotalLots)
          {
-            OpenGridPosition(POSITION_TYPE_BUY, nextLot, buyCount);
+            OpenGridPosition(POSITION_TYPE_BUY, nextLot, g_buy_stats.count);
          }
       }
    }
 
-   int sellCount = CountGridPositions(POSITION_TYPE_SELL);
-   if(sellCount > 0 && sellCount < InpMaxGridLevels)
+   // 2. Manage SELL Grid Expansion
+   if(g_sell_stats.count > 0 && g_sell_stats.count < InpMaxGridLevels)
    {
-      double highestSell = GetHighestEntryPrice(POSITION_TYPE_SELL);
-      int stepPoints = CalculateGridStep(sellCount);
-      double targetNextSellPrice = highestSell + (stepPoints * _Point);
+      int stepPoints = CalculateGridStep(g_sell_stats.count);
+      double targetNextSellPrice = g_sell_stats.highest_price + (stepPoints * _Point);
 
       if(g_symbol.Bid() >= targetNextSellPrice)
       {
-         double lastLot = GetLastOrderLot(POSITION_TYPE_SELL);
+         double lastLot = (g_sell_stats.last_lot > 0) ? g_sell_stats.last_lot : InpInitialLot;
          double nextLot = NormalizeLot(lastLot * InpLotMultiplier);
          nextLot = MathMin(nextLot, InpMaxSingleLot);
 
-         double currentTotalLots = GetTotalBasketLots(POSITION_TYPE_SELL);
-         if((currentTotalLots + nextLot) <= InpMaxTotalLots)
+         if((g_sell_stats.total_lots + nextLot) <= InpMaxTotalLots)
          {
-            OpenGridPosition(POSITION_TYPE_SELL, nextLot, sellCount);
+            OpenGridPosition(POSITION_TYPE_SELL, nextLot, g_sell_stats.count);
          }
       }
    }
@@ -582,28 +703,9 @@ bool OpenGridPosition(ENUM_POSITION_TYPE posType, double lot, int level)
 
    bool success = false;
    if(posType == POSITION_TYPE_BUY)
-   {
-      double price = g_symbol.Ask();
-      success = g_trade.Buy(lot, _Symbol, price, 0, 0, comment);
-   }
+      success = g_trade.Buy(lot, _Symbol, g_symbol.Ask(), 0, 0, comment);
    else
-   {
-      double price = g_symbol.Bid();
-      success = g_trade.Sell(lot, _Symbol, price, 0, 0, comment);
-   }
-
-   if(success)
-   {
-      Print(StringFormat("[GRID ORDER] Opened %s Level %d | Lot: %.2f | Price: %.2f",
-                         (posType == POSITION_TYPE_BUY ? "BUY" : "SELL"), level, lot,
-                         (posType == POSITION_TYPE_BUY ? g_symbol.Ask() : g_symbol.Bid())));
-   }
-   else
-   {
-      Print(StringFormat("[ERROR] Failed to open %s Level %d | Error: %d | %s",
-                         (posType == POSITION_TYPE_BUY ? "BUY" : "SELL"), level,
-                         g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription()));
-   }
+      success = g_trade.Sell(lot, _Symbol, g_symbol.Bid(), 0, 0, comment);
 
    return success;
 }
@@ -611,47 +713,30 @@ bool OpenGridPosition(ENUM_POSITION_TYPE posType, double lot, int level)
 //+------------------------------------------------------------------+
 //| LAYER 3: BASKET TAKE PROFIT & TRAILING EXIT LAYER                |
 //+------------------------------------------------------------------+
-
 void ManageBasketExits()
 {
-   int buyCount = CountGridPositions(POSITION_TYPE_BUY);
-   if(buyCount > 0)
+   // 1. Manage BUY Basket Exits
+   if(g_buy_stats.count > 0)
    {
-      double buyProfit = CalculateBasketProfit(POSITION_TYPE_BUY);
-      double totalLots = 0;
-      double buyBreakeven = CalculateBasketBreakeven(POSITION_TYPE_BUY, totalLots);
-
       double targetUSD = InpBasketTP_USD;
       if(InpRecoveryMode == RECOVERY_MODE_REDUCE && IsGridStale(POSITION_TYPE_BUY))
-      {
          targetUSD *= InpStaleTargetReduction;
-      }
 
-      bool hitUSD_TP = (targetUSD > 0 && buyProfit >= targetUSD);
-      bool hitPercent_TP = (InpBasketTP_Percent > 0 && buyProfit >= (g_account.Balance() * InpBasketTP_Percent / 100.0));
+      bool hitUSD_TP     = (targetUSD > 0 && g_buy_stats.profit >= targetUSD);
+      bool hitPercent_TP = (InpBasketTP_Percent > 0 && g_buy_stats.profit >= (g_account.Balance() * InpBasketTP_Percent / 100.0));
+      bool hitPoints_TP  = (InpBasketTP_Points > 0 && g_buy_stats.breakeven > 0 && g_symbol.Bid() >= (g_buy_stats.breakeven + (InpBasketTP_Points * _Point)));
+      bool hitTrailing_TP= false;
 
-      bool hitPoints_TP = false;
-      if(InpBasketTP_Points > 0 && buyBreakeven > 0)
-      {
-         double tpPrice = buyBreakeven + (InpBasketTP_Points * _Point);
-         if(g_symbol.Bid() >= tpPrice)
-            hitPoints_TP = true;
-      }
-
-      bool hitTrailing_TP = false;
       if(InpUseBasketTrailing)
       {
-         if(buyProfit >= InpTrailStartUSD)
+         if(g_buy_stats.profit >= InpTrailStartUSD)
          {
-            if(buyProfit > g_buy_peak_profit)
-               g_buy_peak_profit = buyProfit;
+            if(g_buy_stats.profit > g_buy_peak_profit)
+               g_buy_peak_profit = g_buy_stats.profit;
 
             double trailingFloor = g_buy_peak_profit - InpTrailStepUSD;
-            if(buyProfit <= trailingFloor && trailingFloor > 0)
-            {
+            if(g_buy_stats.profit <= trailingFloor && trailingFloor > 0)
                hitTrailing_TP = true;
-               Print(StringFormat("[TRAIL TP] BUY Basket Trailed Out! Peak: $%.2f | Exit: $%.2f", g_buy_peak_profit, buyProfit));
-            }
          }
          else
          {
@@ -661,11 +746,10 @@ void ManageBasketExits()
 
       if(hitUSD_TP || hitPercent_TP || hitPoints_TP || hitTrailing_TP)
       {
-         Print(StringFormat("[BASKET TP HIT] Closing BUY Basket | Positions: %d | Lots: %.2f | Profit: $%.2f",
-                            buyCount, totalLots, buyProfit));
          CloseBasket(POSITION_TYPE_BUY);
          g_buy_peak_profit = 0.0;
          CloseHedgePosition(POSITION_TYPE_BUY);
+         CheckDailyReset(true);
       }
    }
    else
@@ -673,44 +757,28 @@ void ManageBasketExits()
       g_buy_peak_profit = 0.0;
    }
 
-   int sellCount = CountGridPositions(POSITION_TYPE_SELL);
-   if(sellCount > 0)
+   // 2. Manage SELL Basket Exits
+   if(g_sell_stats.count > 0)
    {
-      double sellProfit = CalculateBasketProfit(POSITION_TYPE_SELL);
-      double totalLots = 0;
-      double sellBreakeven = CalculateBasketBreakeven(POSITION_TYPE_SELL, totalLots);
-
       double targetUSD = InpBasketTP_USD;
       if(InpRecoveryMode == RECOVERY_MODE_REDUCE && IsGridStale(POSITION_TYPE_SELL))
-      {
          targetUSD *= InpStaleTargetReduction;
-      }
 
-      bool hitUSD_TP = (targetUSD > 0 && sellProfit >= targetUSD);
-      bool hitPercent_TP = (InpBasketTP_Percent > 0 && sellProfit >= (g_account.Balance() * InpBasketTP_Percent / 100.0));
+      bool hitUSD_TP     = (targetUSD > 0 && g_sell_stats.profit >= targetUSD);
+      bool hitPercent_TP = (InpBasketTP_Percent > 0 && g_sell_stats.profit >= (g_account.Balance() * InpBasketTP_Percent / 100.0));
+      bool hitPoints_TP  = (InpBasketTP_Points > 0 && g_sell_stats.breakeven > 0 && g_symbol.Ask() <= (g_sell_stats.breakeven - (InpBasketTP_Points * _Point)));
+      bool hitTrailing_TP= false;
 
-      bool hitPoints_TP = false;
-      if(InpBasketTP_Points > 0 && sellBreakeven > 0)
-      {
-         double tpPrice = sellBreakeven - (InpBasketTP_Points * _Point);
-         if(g_symbol.Ask() <= tpPrice)
-            hitPoints_TP = true;
-      }
-
-      bool hitTrailing_TP = false;
       if(InpUseBasketTrailing)
       {
-         if(sellProfit >= InpTrailStartUSD)
+         if(g_sell_stats.profit >= InpTrailStartUSD)
          {
-            if(sellProfit > g_sell_peak_profit)
-               g_sell_peak_profit = sellProfit;
+            if(g_sell_stats.profit > g_sell_peak_profit)
+               g_sell_peak_profit = g_sell_stats.profit;
 
             double trailingFloor = g_sell_peak_profit - InpTrailStepUSD;
-            if(sellProfit <= trailingFloor && trailingFloor > 0)
-            {
+            if(g_sell_stats.profit <= trailingFloor && trailingFloor > 0)
                hitTrailing_TP = true;
-               Print(StringFormat("[TRAIL TP] SELL Basket Trailed Out! Peak: $%.2f | Exit: $%.2f", g_sell_peak_profit, sellProfit));
-            }
          }
          else
          {
@@ -720,11 +788,10 @@ void ManageBasketExits()
 
       if(hitUSD_TP || hitPercent_TP || hitPoints_TP || hitTrailing_TP)
       {
-         Print(StringFormat("[BASKET TP HIT] Closing SELL Basket | Positions: %d | Lots: %.2f | Profit: $%.2f",
-                            sellCount, totalLots, sellProfit));
          CloseBasket(POSITION_TYPE_SELL);
          g_sell_peak_profit = 0.0;
          CloseHedgePosition(POSITION_TYPE_SELL);
+         CheckDailyReset(true);
       }
    }
    else
@@ -736,17 +803,14 @@ void ManageBasketExits()
 //+------------------------------------------------------------------+
 //| LAYER 4: RISK MANAGEMENT & DRAWDOWN GUARDS                      |
 //+------------------------------------------------------------------+
-
 bool ProcessDrawdownGuards()
 {
    double currentDD = CalculateAccountDrawdownPercent();
    double marginLevel = g_account.MarginLevel();
 
+   // Tier 3: Emergency Hard Stop
    if(InpMaxDrawdownPercent > 0 && currentDD >= InpMaxDrawdownPercent)
    {
-      Print(StringFormat("[EMERGENCY STOP TRIGGERED] Current DD: %.2f%% >= Max Allowed: %.2f%%. Closing ALL Positions!",
-                         currentDD, InpMaxDrawdownPercent));
-      
       CloseAllEAOrders();
       g_emergency_locked = true;
 
@@ -758,30 +822,29 @@ bool ProcessDrawdownGuards()
       return true;
    }
 
+   // Tier 2: Margin Emergency Cut
    if(marginLevel > 0 && marginLevel < InpMarginEmergencyCut)
    {
-      Print(StringFormat("[MARGIN EMERGENCY] Margin Level %.1f%% < %.1f%%. Trimming worst losing position!",
-                         marginLevel, InpMarginEmergencyCut));
       CutWorstLosingPosition();
       return false;
    }
 
+   // Daily Loss Limit Check
    if(InpMaxDailyLossUSD > 0 && g_realized_pl_day <= -InpMaxDailyLossUSD)
    {
       if(!g_daily_lockout)
       {
-         Print(StringFormat("[DAILY LOSS LIMIT] Hit -$%.2f. Pausing trading for today.", InpMaxDailyLossUSD));
          g_daily_lockout = true;
          if(InpSendAlertOnGuard)
             Alert(StringFormat("[DAILY LIMIT] XAUUSD EA Max Daily Loss hit: -$%.2f", InpMaxDailyLossUSD));
       }
    }
 
+   // Daily Profit Target Check
    if(InpDailyProfitTargetUSD > 0 && g_realized_pl_day >= InpDailyProfitTargetUSD)
    {
       if(!g_daily_lockout)
       {
-         Print(StringFormat("[DAILY PROFIT TARGET] Hit +$%.2f! Locking in profits for today.", InpDailyProfitTargetUSD));
          g_daily_lockout = true;
          if(InpSendAlertOnGuard)
             Alert(StringFormat("[DAILY GOAL] XAUUSD EA Profit Target hit: +$%.2f", InpDailyProfitTargetUSD));
@@ -794,81 +857,48 @@ bool ProcessDrawdownGuards()
 //+------------------------------------------------------------------+
 //| LAYER 5: RECOVERY & HEDGE LAYER                                 |
 //+------------------------------------------------------------------+
-
 void ManageRecoveryLayer()
 {
    if(InpRecoveryMode != RECOVERY_MODE_HEDGE) return;
 
-   int buyCount = CountGridPositions(POSITION_TYPE_BUY);
-   if(buyCount >= InpMaxGridLevels && g_buy_hedge_ticket == 0)
+   // 1. Check BUY Basket for Hedge Trigger
+   if(g_buy_stats.count >= InpMaxGridLevels && g_buy_stats.hedge_ticket == 0)
    {
-      double lowestBuy = GetLowestEntryPrice(POSITION_TYPE_BUY);
-      int stepPoints = CalculateGridStep(buyCount);
-      double hedgeTriggerPrice = lowestBuy - (stepPoints * _Point);
+      int stepPoints = CalculateGridStep(g_buy_stats.count);
+      double hedgeTriggerPrice = g_buy_stats.lowest_price - (stepPoints * _Point);
 
       if(g_symbol.Bid() <= hedgeTriggerPrice)
       {
-         double totalBuyLots = GetTotalBasketLots(POSITION_TYPE_BUY);
-         double hedgeLot = NormalizeLot(totalBuyLots * InpHedgeLotRatio);
-
-         if(g_trade.Sell(hedgeLot, _Symbol, g_symbol.Bid(), 0, 0, InpTradeComment + "_HedgeBuy"))
-         {
-            g_buy_hedge_ticket = g_trade.ResultOrder();
-            Print(StringFormat("[HEDGE LOCK] Opened SELL Hedge for BUY Basket | Lot: %.2f", hedgeLot));
-         }
+         double hedgeLot = NormalizeLot(g_buy_stats.total_lots * InpHedgeLotRatio);
+         g_trade.Sell(hedgeLot, _Symbol, g_symbol.Bid(), 0, 0, InpTradeComment + "_HedgeBuy");
       }
    }
 
-   int sellCount = CountGridPositions(POSITION_TYPE_SELL);
-   if(sellCount >= InpMaxGridLevels && g_sell_hedge_ticket == 0)
+   // 2. Check SELL Basket for Hedge Trigger
+   if(g_sell_stats.count >= InpMaxGridLevels && g_sell_stats.hedge_ticket == 0)
    {
-      double highestSell = GetHighestEntryPrice(POSITION_TYPE_SELL);
-      int stepPoints = CalculateGridStep(sellCount);
-      double hedgeTriggerPrice = highestSell + (stepPoints * _Point);
+      int stepPoints = CalculateGridStep(g_sell_stats.count);
+      double hedgeTriggerPrice = g_sell_stats.highest_price + (stepPoints * _Point);
 
       if(g_symbol.Ask() >= hedgeTriggerPrice)
       {
-         double totalSellLots = GetTotalBasketLots(POSITION_TYPE_SELL);
-         double hedgeLot = NormalizeLot(totalSellLots * InpHedgeLotRatio);
-
-         if(g_trade.Buy(hedgeLot, _Symbol, g_symbol.Ask(), 0, 0, InpTradeComment + "_HedgeSell"))
-         {
-            g_sell_hedge_ticket = g_trade.ResultOrder();
-            Print(StringFormat("[HEDGE LOCK] Opened BUY Hedge for SELL Basket | Lot: %.2f", hedgeLot));
-         }
+         double hedgeLot = NormalizeLot(g_sell_stats.total_lots * InpHedgeLotRatio);
+         g_trade.Buy(hedgeLot, _Symbol, g_symbol.Ask(), 0, 0, InpTradeComment + "_HedgeSell");
       }
    }
 }
 
 void CloseHedgePosition(ENUM_POSITION_TYPE originalPosType)
 {
-   ulong targetTicket = (originalPosType == POSITION_TYPE_BUY) ? g_buy_hedge_ticket : g_sell_hedge_ticket;
-   if(targetTicket == 0) return;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
-         {
-            string comment = g_pos.Comment();
-            if((originalPosType == POSITION_TYPE_BUY && StringFind(comment, "HedgeBuy") >= 0) ||
-               (originalPosType == POSITION_TYPE_SELL && StringFind(comment, "HedgeSell") >= 0))
-            {
-               g_trade.PositionClose(g_pos.Ticket());
-            }
-         }
-      }
-   }
-
-   if(originalPosType == POSITION_TYPE_BUY) g_buy_hedge_ticket = 0;
-   else g_sell_hedge_ticket = 0;
+   ulong targetTicket = (originalPosType == POSITION_TYPE_BUY) ? g_buy_stats.hedge_ticket : g_sell_stats.hedge_ticket;
+   if(targetTicket > 0)
+      g_trade.PositionClose(targetTicket);
 }
 
 bool IsGridStale(ENUM_POSITION_TYPE posType)
 {
    if(InpMaxGridHoldHours <= 0) return false;
-   datetime oldestTime = GetOldestPositionOpenTime(posType);
+   datetime oldestTime = (posType == POSITION_TYPE_BUY) ? g_buy_stats.oldest_time : g_sell_stats.oldest_time;
    if(oldestTime == 0) return false;
 
    long holdSeconds = (long)(TimeCurrent() - oldestTime);
@@ -878,7 +908,6 @@ bool IsGridStale(ENUM_POSITION_TYPE posType)
 //+------------------------------------------------------------------+
 //| HELPER & CALCULATION FUNCTIONS                                   |
 //+------------------------------------------------------------------+
-
 double CalculateInitialLot()
 {
    if(InpLotMode == LOT_MODE_FIXED)
@@ -902,160 +931,6 @@ double NormalizeLot(double lot)
    if(lot < minLot) lot = minLot;
    if(lot > maxLot) lot = maxLot;
    return NormalizeDouble(lot, 2);
-}
-
-int CountGridPositions(ENUM_POSITION_TYPE posType)
-{
-   int count = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            if(StringFind(g_pos.Comment(), "Hedge") < 0)
-               count++;
-         }
-      }
-   }
-   return count;
-}
-
-double CalculateBasketProfit(ENUM_POSITION_TYPE posType)
-{
-   double totalProfit = 0.0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            totalProfit += (g_pos.Profit() + g_pos.Swap() + g_pos.Commission());
-         }
-      }
-   }
-   return totalProfit;
-}
-
-double CalculateBasketBreakeven(ENUM_POSITION_TYPE posType, double &totalLots)
-{
-   double sumLotPrice = 0.0;
-   totalLots = 0.0;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            if(StringFind(g_pos.Comment(), "Hedge") < 0)
-            {
-               double volume = g_pos.Volume();
-               double price = g_pos.PriceOpen();
-               sumLotPrice += (volume * price);
-               totalLots += volume;
-            }
-         }
-      }
-   }
-
-   if(totalLots > 0)
-      return NormalizeDouble(sumLotPrice / totalLots, _Digits);
-
-   return 0.0;
-}
-
-double GetTotalBasketLots(ENUM_POSITION_TYPE posType)
-{
-   double totalLots = 0.0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            if(StringFind(g_pos.Comment(), "Hedge") < 0)
-               totalLots += g_pos.Volume();
-         }
-      }
-   }
-   return totalLots;
-}
-
-double GetLowestEntryPrice(ENUM_POSITION_TYPE posType)
-{
-   double lowest = DBL_MAX;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            if(StringFind(g_pos.Comment(), "Hedge") < 0)
-               lowest = MathMin(lowest, g_pos.PriceOpen());
-         }
-      }
-   }
-   return (lowest == DBL_MAX) ? 0.0 : lowest;
-}
-
-double GetHighestEntryPrice(ENUM_POSITION_TYPE posType)
-{
-   double highest = 0.0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            if(StringFind(g_pos.Comment(), "Hedge") < 0)
-               highest = MathMax(highest, g_pos.PriceOpen());
-         }
-      }
-   }
-   return highest;
-}
-
-double GetLastOrderLot(ENUM_POSITION_TYPE posType)
-{
-   datetime newestTime = 0;
-   double lot = InpInitialLot;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            if(StringFind(g_pos.Comment(), "Hedge") < 0)
-            {
-               if(g_pos.Time() > newestTime)
-               {
-                  newestTime = g_pos.Time();
-                  lot = g_pos.Volume();
-               }
-            }
-         }
-      }
-   }
-   return lot;
-}
-
-datetime GetOldestPositionOpenTime(ENUM_POSITION_TYPE posType)
-{
-   datetime oldest = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            if(oldest == 0 || g_pos.Time() < oldest)
-               oldest = g_pos.Time();
-         }
-      }
-   }
-   return oldest;
 }
 
 void CloseBasket(ENUM_POSITION_TYPE posType)
@@ -1108,10 +983,7 @@ void CutWorstLosingPosition()
    }
 
    if(worstTicket > 0)
-   {
-      Print(StringFormat("[CUT LOSS] Emergency Margin Cut: Closed Ticket #%d with P/L: $%.2f", worstTicket, worstLoss));
       g_trade.PositionClose(worstTicket);
-   }
 }
 
 double CalculateAccountDrawdownPercent()
@@ -1125,7 +997,7 @@ double CalculateAccountDrawdownPercent()
    return ((balance - equity) / balance) * 100.0;
 }
 
-void CheckDailyReset()
+void CheckDailyReset(bool forceRecalculate)
 {
    MqlDateTime dt;
    TimeCurrent(dt);
@@ -1135,8 +1007,10 @@ void CheckDailyReset()
    {
       ResetDailyMetrics();
       g_last_day_reset = dayStart;
+      forceRecalculate = true;
    }
-   else
+
+   if(forceRecalculate)
    {
       HistorySelect(dayStart, TimeCurrent());
       double todayPL = 0.0;
@@ -1169,27 +1043,14 @@ void ResetDailyMetrics()
 //+------------------------------------------------------------------+
 //| LAYER 6: ON-CHART HUD DASHBOARD                                  |
 //+------------------------------------------------------------------+
-
 void RenderDashboard()
 {
    string filterReasonBuy, filterReasonSell;
    bool buyFilterPass = CheckMarketFilters(POSITION_TYPE_BUY, filterReasonBuy);
    bool sellFilterPass = CheckMarketFilters(POSITION_TYPE_SELL, filterReasonSell);
 
-   int buyLevels = CountGridPositions(POSITION_TYPE_BUY);
-   int sellLevels = CountGridPositions(POSITION_TYPE_SELL);
-   double buyLots = GetTotalBasketLots(POSITION_TYPE_BUY);
-   double sellLots = GetTotalBasketLots(POSITION_TYPE_SELL);
-   double buyProfit = CalculateBasketProfit(POSITION_TYPE_BUY);
-   double sellProfit = CalculateBasketProfit(POSITION_TYPE_SELL);
-   double totalBasketLots = 0;
-   double buyBE = CalculateBasketBreakeven(POSITION_TYPE_BUY, totalBasketLots);
-   double sellBE = CalculateBasketBreakeven(POSITION_TYPE_SELL, totalBasketLots);
-
    double currentDD = CalculateAccountDrawdownPercent();
    double marginLevel = g_account.MarginLevel();
-   double atrPts = GetCurrentATRPoints();
-   long spread = g_symbol.Spread();
 
    string statusStr = "ACTIVE";
    if(g_emergency_locked) statusStr = "EMERGENCY_LOCKED";
@@ -1199,21 +1060,21 @@ void RenderDashboard()
 
    string dash = "";
    dash += "=========================================================\n";
-   dash += StringFormat("   XAUUSD ADVANCED GRID EA  v2.00  |  Status: [%s]\n", statusStr);
+   dash += StringFormat("   XAUUSD ADVANCED GRID EA  v2.10  |  Status: [%s]\n", statusStr);
    dash += "=========================================================\n";
-   dash += StringFormat(" Symbol: %s | Magic: %d | Spread: %d pts | ATR(14): %.0f pts\n", _Symbol, InpMagicNumber, spread, atrPts);
+   dash += StringFormat(" Symbol: %s | Magic: %d | Spread: %d pts | ATR(14): %.0f pts\n", _Symbol, InpMagicNumber, g_symbol.Spread(), g_cached_atr_points);
    dash += StringFormat(" Filters: Buy [%s] | Sell [%s]\n", (buyFilterPass ? "PASS" : filterReasonBuy), (sellFilterPass ? "PASS" : filterReasonSell));
    dash += "---------------------------------------------------------\n";
-   dash += StringFormat(" [BUY GRID]  Levels: %d/%d | Lots: %.2f | BE: %.2f | P/L: $%.2f\n", buyLevels, InpMaxGridLevels, buyLots, buyBE, buyProfit);
+   dash += StringFormat(" [BUY GRID]  Levels: %d/%d | Lots: %.2f | BE: %.2f | P/L: $%.2f\n", g_buy_stats.count, InpMaxGridLevels, g_buy_stats.total_lots, g_buy_stats.breakeven, g_buy_stats.profit);
    if(g_buy_peak_profit > 0)
       dash += StringFormat("             Trailing Active -> Peak: $%.2f (Floor: $%.2f)\n", g_buy_peak_profit, g_buy_peak_profit - InpTrailStepUSD);
-   if(g_buy_hedge_ticket > 0)
+   if(g_buy_stats.hedge_ticket > 0)
       dash += "             [HEDGE ACTIVE] Position Protected\n";
 
-   dash += StringFormat(" [SELL GRID] Levels: %d/%d | Lots: %.2f | BE: %.2f | P/L: $%.2f\n", sellLevels, InpMaxGridLevels, sellLots, sellBE, sellProfit);
+   dash += StringFormat(" [SELL GRID] Levels: %d/%d | Lots: %.2f | BE: %.2f | P/L: $%.2f\n", g_sell_stats.count, InpMaxGridLevels, g_sell_stats.total_lots, g_sell_stats.breakeven, g_sell_stats.profit);
    if(g_sell_peak_profit > 0)
       dash += StringFormat("             Trailing Active -> Peak: $%.2f (Floor: $%.2f)\n", g_sell_peak_profit, g_sell_peak_profit - InpTrailStepUSD);
-   if(g_sell_hedge_ticket > 0)
+   if(g_sell_stats.hedge_ticket > 0)
       dash += "             [HEDGE ACTIVE] Position Protected\n";
 
    dash += "---------------------------------------------------------\n";

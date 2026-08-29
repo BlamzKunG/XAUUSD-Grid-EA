@@ -5,10 +5,9 @@
 //+------------------------------------------------------------------+
 #property copyright   "Copyright 2026, BlamzKunG"
 #property link        "https://github.com/BlamzKunG/XAUUSD-Grid-EA"
-#property version     "1.00"
-#property description "Adaptive Mean-Reversion Grid EA for XAUUSD (Gold)"
-#property description "Focuses on Capital Preservation & Sideway Mean-Reversion"
-#property description "Multi-TF Filters: H1 (EMA50/200 + ADX) & M15 (RSI + Bollinger Bands + Dynamic ATR)"
+#property version     "1.10"
+#property description "High-Performance Adaptive Mean-Reversion Grid EA for XAUUSD (Gold)"
+#property description "Optimized: Single-Pass Basket Stats, Cached Indicators & Multi-TF Filters"
 #property strict
 
 //--- Standard Library Includes
@@ -36,6 +35,37 @@ enum ENUM_LOT_STRATEGY
 };
 
 //+------------------------------------------------------------------+
+//| STRUCTURES                                                       |
+//+------------------------------------------------------------------+
+struct SBasketInfo
+{
+   int      count;
+   double   total_lots;
+   double   profit;
+   double   breakeven;
+   double   lowest_price;
+   double   highest_price;
+   double   last_lot;
+   double   last_price;
+   datetime oldest_time;
+   datetime newest_time;
+
+   void Reset()
+   {
+      count         = 0;
+      total_lots    = 0.0;
+      profit        = 0.0;
+      breakeven     = 0.0;
+      lowest_price  = DBL_MAX;
+      highest_price = 0.0;
+      last_lot      = 0.0;
+      last_price    = 0.0;
+      oldest_time   = 0;
+      newest_time   = 0;
+   }
+};
+
+//+------------------------------------------------------------------+
 //| INPUT PARAMETERS                                                 |
 //+------------------------------------------------------------------+
 
@@ -53,23 +83,23 @@ input ENUM_TIMEFRAMES      InpTrendTF              = PERIOD_H1;      // Trend Fi
 // H1 Trend Filter (EMA 50 / 200 + ADX)
 input int                  InpEMA_Fast             = 50;             // [H1] Fast EMA Period
 input int                  InpEMA_Slow             = 200;            // [H1] Slow EMA Period
-input int                  InpMaxEMADiffPoints     = 1500;           // [H1] Max Distance between EMA50 & EMA200 (Points)
+input int                  InpMaxEMADiffPoints     = 2000;           // [H1] Max Distance between EMA50 & EMA200 (Points)
 input int                  InpADX_Period           = 14;             // [H1] ADX Period
-input double               InpMaxADXForEntry       = 22.0;           // [H1] Max ADX for Entry (Above this = Strong Trend, Block Grid)
-input double               InpTrendEscapeADX       = 28.0;           // [H1] Trend Escape ADX (Trigger Emergency Freeze)
+input double               InpMaxADXForEntry       = 28.0;           // [H1] Max ADX for Entry (Above this = Strong Trend)
+input double               InpTrendEscapeADX       = 32.0;           // [H1] Trend Escape ADX (Trigger Emergency Freeze)
 
 // M15 Mean-Reversion Entry Filters (RSI + Bollinger Bands)
 input int                  InpRSI_Period           = 14;             // [M15] RSI Period
-input double               InpBuyRSI_Level         = 30.0;           // [M15] Buy Oversold RSI Level (RSI < Level)
-input double               InpSellRSI_Level        = 70.0;           // [M15] Sell Overbought RSI Level (RSI > Level)
+input double               InpBuyRSI_Level         = 35.0;           // [M15] Buy Oversold RSI Level (RSI < Level)
+input double               InpSellRSI_Level        = 65.0;           // [M15] Sell Overbought RSI Level (RSI > Level)
 input int                  InpBB_Period            = 20;             // [M15] Bollinger Bands Period
 input double               InpBB_Deviation         = 2.0;            // [M15] Bollinger Bands Deviation
 
 //=== 3. DYNAMIC GRID ENGINE ===
 input group "=== [3] Dynamic ATR Grid Engine ==="
 input int                  InpATR_Period           = 14;             // [M15] ATR Period
-input double               InpGridATRMultiplier    = 1.5;            // Grid Step ATR Multiplier
-input double               InpMinGridStepUSD       = 4.0;            // Minimum Grid Step ($ USD price distance, e.g. $4.00)
+input double               InpGridATRMultiplier    = 1.4;            // Grid Step ATR Multiplier
+input double               InpMinGridStepUSD       = 3.5;            // Minimum Grid Step ($ USD price distance, e.g. $3.50)
 input double               InpMaxGridStepUSD       = 12.0;           // Maximum Grid Step ($ USD price distance, e.g. $12.00)
 input int                  InpMaxGridLevels        = 5;              // Maximum Grid Levels per Basket (Strict Cap)
 
@@ -86,33 +116,33 @@ input double               InpRiskPerBasketPct     = 3.0;            // Max Equi
 input group "=== [5] Basket Take Profit ==="
 input ENUM_TP_MODE         InpTPMode               = TP_MODE_HYBRID; // Take Profit Mode
 input double               InpBasketTPPercent      = 0.50;           // Basket TP (% of Balance, e.g. 0.5%)
-input double               InpBasketTPUSD          = 20.0;           // Basket TP ($ USD Fixed, e.g. $20.00)
+input double               InpBasketTPUSD          = 15.0;           // Basket TP ($ USD Fixed, e.g. $15.00)
 input double               InpBasketTP_ATR_Factor  = 0.30;           // TP Distance from Weighted Average (ATR_M15 * Factor)
 input bool                 InpUseBasketTrailing    = true;           // Enable Basket Trailing Stop
-input double               InpTrailStartUSD        = 12.0;           // Trail Start Target ($ USD)
-input double               InpTrailStepUSD         = 4.0;            // Trail Step / Lock-in Distance ($ USD)
+input double               InpTrailStartUSD        = 10.0;           // Trail Start Target ($ USD)
+input double               InpTrailStepUSD         = 3.0;            // Trail Step / Lock-in Distance ($ USD)
 
 //=== 6. STOP LOSS & EMERGENCY PROTECTION ===
 input group "=== [6] Risk Management & Emergency SL ==="
 input double               InpEquityStopPercent    = 8.0;            // Equity Drawdown Hard Stop % (Close All & Pause)
 input bool                 InpUseEmergencyATR_SL   = true;           // Emergency SL based on ATR(H1) from First Entry
-input double               InpEmergencySL_ATR_Mult = 3.0;            // Emergency SL ATR(H1) Multiplier (e.g. 3.0x H1 ATR)
+input double               InpEmergencySL_ATR_Mult = 3.5;            // Emergency SL ATR(H1) Multiplier (e.g. 3.5x H1 ATR)
 input bool                 InpUseTrendEscape       = true;           // Enable Trend Escape Safety Cut
 input double               InpTrendEscapeMaxLossUSD= 60.0;           // Max Loss to Trigger Trend Escape Cut ($ USD)
 input double               InpMarginLevelFreeze    = 200.0;          // Margin Guard: Stop New Grid if Margin Level % < threshold
 input double               InpMarginEmergencyCut   = 120.0;          // Margin Emergency: Cut worst losing order if Margin % < threshold
 input double               InpDailyLossLimitPct    = 3.0;            // Daily Max Loss Limit (% of Balance, 0 to disable)
 input double               InpDailyProfitTargetPct = 1.5;            // Daily Profit Target (% of Balance, 0 to disable)
-input int                  InpCooldownMinutes      = 30;             // Cooldown Buffer after Basket Close (Minutes)
+input int                  InpCooldownMinutes      = 15;             // Cooldown Buffer after Basket Close (Minutes)
 
 //=== 7. TIME & SPREAD FILTERS ===
 input group "=== [7] Time & Spread Filters ==="
 input bool                 InpUseSpreadFilter      = true;           // Enable Max Spread Filter
-input int                  InpMaxSpreadPoints      = 40;             // Max Allowed Spread (Points)
+input int                  InpMaxSpreadPoints      = 45;             // Max Allowed Spread (Points)
 input bool                 InpUseTimeFilter        = true;           // Enable Trading Session Filter
-input int                  InpStartHour            = 8;              // Session Start Hour (UTC / Server Time)
-input int                  InpEndHour              = 20;             // Session End Hour (UTC / Server Time)
-input bool                 InpAvoidAsianNight      = true;           // Avoid Low Liquidity Asian Midnight (22:00-06:00)
+input int                  InpStartHour            = 7;              // Session Start Hour (UTC / Server Time)
+input int                  InpEndHour              = 21;             // Session End Hour (UTC / Server Time)
+input bool                 InpAvoidAsianNight      = false;          // Avoid Low Liquidity Asian Midnight (22:00-06:00)
 input bool                 InpFridayCloseEarly     = true;           // Stop Opening on Friday Afternoon
 input int                  InpFridayStopHour       = 18;             // Friday Stop Hour
 
@@ -137,6 +167,17 @@ int            g_h_adx_h1        = INVALID_HANDLE;
 int            g_h_ema_fast_h1   = INVALID_HANDLE;
 int            g_h_ema_slow_h1   = INVALID_HANDLE;
 
+// Cached Indicator Data
+datetime       g_last_bar_time   = 0;
+double         g_cached_rsi      = 50.0;
+double         g_cached_bb_upper = 0.0;
+double         g_cached_bb_lower = 0.0;
+double         g_cached_atr_m15  = 4.0;
+double         g_cached_atr_h1   = 15.0;
+double         g_cached_adx_h1   = 15.0;
+double         g_cached_ema_fast = 0.0;
+double         g_cached_ema_slow = 0.0;
+
 // Daily & State Tracking
 datetime       g_last_day_reset  = 0;
 datetime       g_last_basket_close_time = 0;
@@ -153,21 +194,18 @@ double         g_sell_peak_profit= 0.0;
 double         g_buy_first_price = 0.0;
 double         g_sell_first_price= 0.0;
 
+// Single-Pass Basket Stats
+SBasketInfo    g_buy_basket;
+SBasketInfo    g_sell_basket;
+
 // Forward Declarations
+void UpdateBasketInfo();
+void RefreshIndicatorCache();
 bool CheckEntryFilters(ENUM_POSITION_TYPE posType, string &reason);
 bool CheckTrendEscape(ENUM_POSITION_TYPE posType);
-double GetATR_M15_Price();
-double GetATR_H1_Price();
 double CalculateDynamicGridStepUSD();
 double CalculateNextLot(ENUM_POSITION_TYPE posType, int currentLevel);
 double NormalizeLotSize(double lot);
-int CountBasketPositions(ENUM_POSITION_TYPE posType);
-double CalculateBasketProfit(ENUM_POSITION_TYPE posType);
-double CalculateWeightedAverageEntry(ENUM_POSITION_TYPE posType, double &totalLots);
-double GetTotalBasketVolume(ENUM_POSITION_TYPE posType);
-double GetLowestPrice(ENUM_POSITION_TYPE posType);
-double GetHighestPrice(ENUM_POSITION_TYPE posType);
-double GetLastPositionPrice(ENUM_POSITION_TYPE posType);
 bool OpenOrder(ENUM_POSITION_TYPE posType, double lot, int level);
 void ManageBasketExits();
 void ManageGridExpansion();
@@ -177,7 +215,7 @@ void CloseBasketPositions(ENUM_POSITION_TYPE posType);
 void CloseAllPositions();
 void CutWorstOrder();
 double CalculateAccountDrawdownPercent();
-void CheckDailyReset();
+void CheckDailyReset(bool forceRecalculate);
 void ResetDailyState();
 void RenderHUD();
 
@@ -212,21 +250,22 @@ int OnInit()
       g_h_atr_h1 == INVALID_HANDLE || g_h_adx_h1 == INVALID_HANDLE || g_h_ema_fast_h1 == INVALID_HANDLE ||
       g_h_ema_slow_h1 == INVALID_HANDLE)
    {
-      Print("[ERROR] Failed to initialize one or more indicator handles.");
+      Print("[ERROR] Failed to initialize indicator handles.");
       return INIT_FAILED;
    }
 
    ResetDailyState();
+   RefreshIndicatorCache();
+   UpdateBasketInfo();
+
    EventSetTimer(1);
 
    Print("=====================================================");
-   Print(" [XAUUSD Adaptive Mean-Reversion EA] Initialized");
-   Print(" Symbol: ", _Symbol, " | Magic: ", InpMagicNumber, " | Timeframes: Entry=", EnumToString(InpEntryTF), " Trend=", EnumToString(InpTrendTF));
-   Print(" Multi-TF Setup: H1 ADX Max=", InpMaxADXForEntry, " | M15 RSI Oversold/Overbought=", InpBuyRSI_Level, "/", InpSellRSI_Level);
-   Print(" Safety: Equity Stop=", InpEquityStopPercent, "% | Max Levels=", InpMaxGridLevels, " | Cooldown=", InpCooldownMinutes, "m");
+   Print(" [XAUUSD Adaptive Mean-Reversion EA v1.10] Optimized Initialized");
+   Print(" Symbol: ", _Symbol, " | Magic: ", InpMagicNumber);
    Print("=====================================================");
 
-   if(InpShowDashboard)
+   if(InpShowDashboard && !MQLInfoInteger(MQL_OPTIMIZATION))
       RenderHUD();
 
    return INIT_SUCCEEDED;
@@ -251,46 +290,173 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| Expert tick function                                             |
+//| Expert tick function (High Speed)                                |
 //+------------------------------------------------------------------+
 void OnTick()
 {
    g_symbol.RefreshRates();
 
-   CheckDailyReset();
-
-   // 1. Safety Guards & Drawdown Protection
-   if(ProcessSafetyGuards())
+   // 1. Refresh Indicator Cache on new M15 bar
+   datetime currentBarTime = iTime(_Symbol, InpEntryTF, 0);
+   if(currentBarTime != g_last_bar_time)
    {
-      if(InpShowDashboard) RenderHUD();
-      return;
+      g_last_bar_time = currentBarTime;
+      RefreshIndicatorCache();
+      CheckDailyReset(true);
    }
 
-   // 2. Manage Basket Take Profit & Trailing Stop
+   // 2. Single-Pass Basket Stats Update
+   UpdateBasketInfo();
+
+   // 3. Safety Guards & Drawdown Protection
+   if(ProcessSafetyGuards())
+      return;
+
+   // 4. Manage Basket Take Profit & Trailing Stop
    ManageBasketExits();
 
-   // 3. Manage Grid Expansion (Averaging in safe sideway conditions)
+   // 5. Manage Grid Expansion
    ManageGridExpansion();
 
-   // 4. Check for New Basket Entries (When no opposite basket exists)
+   // 6. Check for New Basket Entries
    CheckNewEntries();
-
-   // 5. Render HUD
-   if(InpShowDashboard)
-      RenderHUD();
 }
 
 //+------------------------------------------------------------------+
-//| Timer function (1-second tick)                                   |
+//| Timer function (1-second tick for HUD & safety)                  |
 //+------------------------------------------------------------------+
 void OnTimer()
 {
    g_symbol.RefreshRates();
-   CheckDailyReset();
+   UpdateBasketInfo();
    ProcessSafetyGuards();
 
-   if(InpShowDashboard)
+   if(InpShowDashboard && !MQLInfoInteger(MQL_OPTIMIZATION))
       RenderHUD();
+}
+
+//+------------------------------------------------------------------+
+//| SINGLE-PASS BASKET STATISTICS                                    |
+//+------------------------------------------------------------------+
+void UpdateBasketInfo()
+{
+   g_buy_basket.Reset();
+   g_sell_basket.Reset();
+
+   double sumBuyPriceLot = 0.0;
+   double sumSellPriceLot = 0.0;
+
+   int totalPositions = PositionsTotal();
+   for(int i = totalPositions - 1; i >= 0; i--)
+   {
+      if(g_pos.SelectByIndex(i))
+      {
+         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber)
+         {
+            ENUM_POSITION_TYPE pType = g_pos.PositionType();
+            double volume  = g_pos.Volume();
+            double price   = g_pos.PriceOpen();
+            double pnl     = g_pos.Profit() + g_pos.Swap() + g_pos.Commission();
+            datetime time  = g_pos.Time();
+
+            if(pType == POSITION_TYPE_BUY)
+            {
+               g_buy_basket.count++;
+               g_buy_basket.total_lots += volume;
+               g_buy_basket.profit += pnl;
+               sumBuyPriceLot += (volume * price);
+
+               if(price < g_buy_basket.lowest_price) g_buy_basket.lowest_price = price;
+               if(price > g_buy_basket.highest_price) g_buy_basket.highest_price = price;
+
+               if(g_buy_basket.oldest_time == 0 || time < g_buy_basket.oldest_time)
+                  g_buy_basket.oldest_time = time;
+               if(time > g_buy_basket.newest_time)
+               {
+                  g_buy_basket.newest_time = time;
+                  g_buy_basket.last_lot    = volume;
+                  g_buy_basket.last_price  = price;
+               }
+            }
+            else if(pType == POSITION_TYPE_SELL)
+            {
+               g_sell_basket.count++;
+               g_sell_basket.total_lots += volume;
+               g_sell_basket.profit += pnl;
+               sumSellPriceLot += (volume * price);
+
+               if(price < g_sell_basket.lowest_price) g_sell_basket.lowest_price = price;
+               if(price > g_sell_basket.highest_price) g_sell_basket.highest_price = price;
+
+               if(g_sell_basket.oldest_time == 0 || time < g_sell_basket.oldest_time)
+                  g_sell_basket.oldest_time = time;
+               if(time > g_sell_basket.newest_time)
+               {
+                  g_sell_basket.newest_time = time;
+                  g_sell_basket.last_lot    = volume;
+                  g_sell_basket.last_price  = price;
+               }
+            }
+         }
+      }
+   }
+
+   if(g_buy_basket.total_lots > 0)
+      g_buy_basket.breakeven = NormalizeDouble(sumBuyPriceLot / g_buy_basket.total_lots, _Digits);
+   if(g_sell_basket.total_lots > 0)
+      g_sell_basket.breakeven = NormalizeDouble(sumSellPriceLot / g_sell_basket.total_lots, _Digits);
+
+   if(g_buy_basket.lowest_price == DBL_MAX) g_buy_basket.lowest_price = 0.0;
+   if(g_sell_basket.lowest_price == DBL_MAX) g_sell_basket.lowest_price = 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| REFRESH INDICATOR CACHE                                          |
+//+------------------------------------------------------------------+
+void RefreshIndicatorCache()
+{
+   if(g_h_rsi_m15 != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_rsi_m15, 0, 0, 1, buf) > 0) g_cached_rsi = buf[0];
+   }
+
+   if(g_h_bb_m15 != INVALID_HANDLE)
+   {
+      double bufUpper[1], bufLower[1];
+      if(CopyBuffer(g_h_bb_m15, 1, 0, 1, bufUpper) > 0) g_cached_bb_upper = bufUpper[0];
+      if(CopyBuffer(g_h_bb_m15, 2, 0, 1, bufLower) > 0) g_cached_bb_lower = bufLower[0];
+   }
+
+   if(g_h_atr_m15 != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_atr_m15, 0, 0, 1, buf) > 0) g_cached_atr_m15 = buf[0];
+   }
+
+   if(g_h_atr_h1 != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_atr_h1, 0, 0, 1, buf) > 0) g_cached_atr_h1 = buf[0];
+   }
+
+   if(g_h_adx_h1 != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_adx_h1, 0, 0, 1, buf) > 0) g_cached_adx_h1 = buf[0];
+   }
+
+   if(g_h_ema_fast_h1 != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_ema_fast_h1, 0, 0, 1, buf) > 0) g_cached_ema_fast = buf[0];
+   }
+
+   if(g_h_ema_slow_h1 != INVALID_HANDLE)
+   {
+      double buf[1];
+      if(CopyBuffer(g_h_ema_slow_h1, 0, 0, 1, buf) > 0) g_cached_ema_slow = buf[0];
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -329,15 +495,13 @@ bool CheckEntryFilters(ENUM_POSITION_TYPE posType, string &reason)
       }
    }
 
-   // 3. Mutual Basket Exclusion: Do not open Buy if Sell Basket is active (and vice versa)
-   int buyCount = CountBasketPositions(POSITION_TYPE_BUY);
-   int sellCount = CountBasketPositions(POSITION_TYPE_SELL);
-   if(posType == POSITION_TYPE_BUY && sellCount > 0)
+   // 3. Mutual Basket Exclusion
+   if(posType == POSITION_TYPE_BUY && g_sell_basket.count > 0)
    {
       reason = "SELL_BASKET_ACTIVE";
       return false;
    }
-   if(posType == POSITION_TYPE_SELL && buyCount > 0)
+   if(posType == POSITION_TYPE_SELL && g_buy_basket.count > 0)
    {
       reason = "BUY_BASKET_ACTIVE";
       return false;
@@ -380,20 +544,15 @@ bool CheckEntryFilters(ENUM_POSITION_TYPE posType, string &reason)
    }
 
    // 6. H1 Trend Filter (ADX & EMA Sideway Check)
-   double adxBuf[1];
-   if(CopyBuffer(g_h_adx_h1, 0, 0, 1, adxBuf) > 0)
+   if(g_cached_adx_h1 > InpMaxADXForEntry)
    {
-      if(adxBuf[0] > InpMaxADXForEntry)
-      {
-         reason = StringFormat("H1_ADX_HIGH (%.1f > %.1f Trend)", adxBuf[0], InpMaxADXForEntry);
-         return false;
-      }
+      reason = StringFormat("H1_ADX_HIGH (%.1f > %.1f Trend)", g_cached_adx_h1, InpMaxADXForEntry);
+      return false;
    }
 
-   double emaFast[1], emaSlow[1];
-   if(CopyBuffer(g_h_ema_fast_h1, 0, 0, 1, emaFast) > 0 && CopyBuffer(g_h_ema_slow_h1, 0, 0, 1, emaSlow) > 0)
+   if(g_cached_ema_fast > 0 && g_cached_ema_slow > 0)
    {
-      double emaDistPts = MathAbs(emaFast[0] - emaSlow[0]) / _Point;
+      double emaDistPts = MathAbs(g_cached_ema_fast - g_cached_ema_slow) / _Point;
       if(emaDistPts > InpMaxEMADiffPoints)
       {
          reason = StringFormat("EMA_DIST_HIGH (%.0f > %d)", emaDistPts, InpMaxEMADiffPoints);
@@ -402,36 +561,27 @@ bool CheckEntryFilters(ENUM_POSITION_TYPE posType, string &reason)
    }
 
    // 7. M15 Mean-Reversion Signals (RSI & Bollinger Bands)
-   double rsiBuf[1];
-   if(CopyBuffer(g_h_rsi_m15, 0, 0, 1, rsiBuf) > 0)
+   if(posType == POSITION_TYPE_BUY && g_cached_rsi >= InpBuyRSI_Level)
    {
-      double rsiVal = rsiBuf[0];
-      if(posType == POSITION_TYPE_BUY && rsiVal >= InpBuyRSI_Level)
-      {
-         reason = StringFormat("RSI_NOT_OVERSOLD (%.1f >= %.1f)", rsiVal, InpBuyRSI_Level);
-         return false;
-      }
-      if(posType == POSITION_TYPE_SELL && rsiVal <= InpSellRSI_Level)
-      {
-         reason = StringFormat("RSI_NOT_OVERBOUGHT (%.1f <= %.1f)", rsiVal, InpSellRSI_Level);
-         return false;
-      }
+      reason = StringFormat("RSI_NOT_OVERSOLD (%.1f >= %.1f)", g_cached_rsi, InpBuyRSI_Level);
+      return false;
+   }
+   if(posType == POSITION_TYPE_SELL && g_cached_rsi <= InpSellRSI_Level)
+   {
+      reason = StringFormat("RSI_NOT_OVERBOUGHT (%.1f <= %.1f)", g_cached_rsi, InpSellRSI_Level);
+      return false;
    }
 
-   double bbUpper[1], bbLower[1];
-   if(CopyBuffer(g_h_bb_m15, 1, 0, 1, bbUpper) > 0 && CopyBuffer(g_h_bb_m15, 2, 0, 1, bbLower) > 0)
+   double currentPrice = (posType == POSITION_TYPE_BUY) ? g_symbol.Ask() : g_symbol.Bid();
+   if(posType == POSITION_TYPE_BUY && g_cached_bb_lower > 0 && currentPrice > g_cached_bb_lower)
    {
-      double currentPrice = (posType == POSITION_TYPE_BUY) ? g_symbol.Ask() : g_symbol.Bid();
-      if(posType == POSITION_TYPE_BUY && currentPrice > bbLower[0])
-      {
-         reason = "PRICE_ABOVE_LOWER_BB";
-         return false;
-      }
-      if(posType == POSITION_TYPE_SELL && currentPrice < bbUpper[0])
-      {
-         reason = "PRICE_BELOW_UPPER_BB";
-         return false;
-      }
+      reason = "PRICE_ABOVE_LOWER_BB";
+      return false;
+   }
+   if(posType == POSITION_TYPE_SELL && g_cached_bb_upper > 0 && currentPrice < g_cached_bb_upper)
+   {
+      reason = "PRICE_BELOW_UPPER_BB";
+      return false;
    }
 
    // 8. Margin Level Guard
@@ -450,11 +600,7 @@ bool CheckEntryFilters(ENUM_POSITION_TYPE posType, string &reason)
 //+------------------------------------------------------------------+
 void CheckNewEntries()
 {
-   int buyCount = CountBasketPositions(POSITION_TYPE_BUY);
-   int sellCount = CountBasketPositions(POSITION_TYPE_SELL);
-
-   // Initial Buy Entry
-   if(buyCount == 0 && sellCount == 0)
+   if(g_buy_basket.count == 0 && g_sell_basket.count == 0)
    {
       string buyReason;
       if(CheckEntryFilters(POSITION_TYPE_BUY, buyReason))
@@ -493,49 +639,43 @@ void ManageGridExpansion()
 
    double currentDD = CalculateAccountDrawdownPercent();
    if(currentDD >= (InpEquityStopPercent * 0.75))
-      return; // Soft stop grid expansion when DD is 75% of Equity Stop
+      return;
 
    double gridStepUSD = CalculateDynamicGridStepUSD();
 
    // 1. Manage BUY Basket Grid Expansion
-   int buyCount = CountBasketPositions(POSITION_TYPE_BUY);
-   if(buyCount > 0 && buyCount < InpMaxGridLevels)
+   if(g_buy_basket.count > 0 && g_buy_basket.count < InpMaxGridLevels)
    {
       if(!CheckTrendEscape(POSITION_TYPE_BUY))
       {
-         double lastBuyPrice = GetLastPositionPrice(POSITION_TYPE_BUY);
+         double lastBuyPrice = (g_buy_basket.last_price > 0) ? g_buy_basket.last_price : g_buy_basket.lowest_price;
          double targetBuyPrice = lastBuyPrice - gridStepUSD;
 
          if(g_symbol.Ask() <= targetBuyPrice)
          {
-            double nextLot = CalculateNextLot(POSITION_TYPE_BUY, buyCount);
-            double totalVolume = GetTotalBasketVolume(POSITION_TYPE_BUY);
-
-            if((totalVolume + nextLot) <= InpMaxExposureLots)
+            double nextLot = CalculateNextLot(POSITION_TYPE_BUY, g_buy_basket.count);
+            if((g_buy_basket.total_lots + nextLot) <= InpMaxExposureLots)
             {
-               OpenOrder(POSITION_TYPE_BUY, nextLot, buyCount);
+               OpenOrder(POSITION_TYPE_BUY, nextLot, g_buy_basket.count);
             }
          }
       }
    }
 
    // 2. Manage SELL Basket Grid Expansion
-   int sellCount = CountBasketPositions(POSITION_TYPE_SELL);
-   if(sellCount > 0 && sellCount < InpMaxGridLevels)
+   if(g_sell_basket.count > 0 && g_sell_basket.count < InpMaxGridLevels)
    {
       if(!CheckTrendEscape(POSITION_TYPE_SELL))
       {
-         double lastSellPrice = GetLastPositionPrice(POSITION_TYPE_SELL);
+         double lastSellPrice = (g_sell_basket.last_price > 0) ? g_sell_basket.last_price : g_sell_basket.highest_price;
          double targetSellPrice = lastSellPrice + gridStepUSD;
 
          if(g_symbol.Bid() >= targetSellPrice)
          {
-            double nextLot = CalculateNextLot(POSITION_TYPE_SELL, sellCount);
-            double totalVolume = GetTotalBasketVolume(POSITION_TYPE_SELL);
-
-            if((totalVolume + nextLot) <= InpMaxExposureLots)
+            double nextLot = CalculateNextLot(POSITION_TYPE_SELL, g_sell_basket.count);
+            if((g_sell_basket.total_lots + nextLot) <= InpMaxExposureLots)
             {
-               OpenOrder(POSITION_TYPE_SELL, nextLot, sellCount);
+               OpenOrder(POSITION_TYPE_SELL, nextLot, g_sell_basket.count);
             }
          }
       }
@@ -548,14 +688,8 @@ void ManageGridExpansion()
 void ManageBasketExits()
 {
    // 1. BUY Basket Exits
-   int buyCount = CountBasketPositions(POSITION_TYPE_BUY);
-   if(buyCount > 0)
+   if(g_buy_basket.count > 0)
    {
-      double buyProfit = CalculateBasketProfit(POSITION_TYPE_BUY);
-      double totalLots = 0;
-      double buyBE = CalculateWeightedAverageEntry(POSITION_TYPE_BUY, totalLots);
-      double atrM15 = GetATR_M15_Price();
-
       bool exitTriggered = false;
 
       // Option 1: Money / % Balance Target
@@ -565,32 +699,29 @@ void ManageBasketExits()
          if(InpTPMode == TP_MODE_PERCENT_BALANCE || InpTPMode == TP_MODE_HYBRID)
             targetUSD = g_account.Balance() * (InpBasketTPPercent / 100.0);
 
-         if(buyProfit >= targetUSD)
+         if(g_buy_basket.profit >= targetUSD)
             exitTriggered = true;
       }
 
       // Option 2: Weighted Average + ATR Target Distance
       if(InpTPMode == TP_MODE_HYBRID || InpTPMode == TP_MODE_ATR_DISTANCE)
       {
-         double tpPrice = buyBE + (atrM15 * InpBasketTP_ATR_Factor);
-         if(g_symbol.Bid() >= tpPrice && buyProfit > 0)
+         double tpPrice = g_buy_basket.breakeven + (g_cached_atr_m15 * InpBasketTP_ATR_Factor);
+         if(g_symbol.Bid() >= tpPrice && g_buy_basket.profit > 0)
             exitTriggered = true;
       }
 
       // Option 3: Basket Trailing Stop
       if(InpUseBasketTrailing)
       {
-         if(buyProfit >= InpTrailStartUSD)
+         if(g_buy_basket.profit >= InpTrailStartUSD)
          {
-            if(buyProfit > g_buy_peak_profit)
-               g_buy_peak_profit = buyProfit;
+            if(g_buy_basket.profit > g_buy_peak_profit)
+               g_buy_peak_profit = g_buy_basket.profit;
 
             double trailingFloor = g_buy_peak_profit - InpTrailStepUSD;
-            if(buyProfit <= trailingFloor && trailingFloor > 0)
-            {
+            if(g_buy_basket.profit <= trailingFloor && trailingFloor > 0)
                exitTriggered = true;
-               Print(StringFormat("[TRAIL EXIT] BUY Basket locked profit! Peak: $%.2f | Exit: $%.2f", g_buy_peak_profit, buyProfit));
-            }
          }
          else
          {
@@ -601,23 +732,18 @@ void ManageBasketExits()
       // Option 4: Emergency Distance Stop Loss (ATR H1 based from First Entry)
       if(InpUseEmergencyATR_SL && g_buy_first_price > 0)
       {
-         double atrH1 = GetATR_H1_Price();
-         double emergencySL = g_buy_first_price - (atrH1 * InpEmergencySL_ATR_Mult);
+         double emergencySL = g_buy_first_price - (g_cached_atr_h1 * InpEmergencySL_ATR_Mult);
          if(g_symbol.Bid() <= emergencySL)
-         {
-            Print(StringFormat("[EMERGENCY SL] BUY Basket hit Emergency SL: %.2f (Current: %.2f)", emergencySL, g_symbol.Bid()));
             exitTriggered = true;
-         }
       }
 
       if(exitTriggered)
       {
-         Print(StringFormat("[BASKET CLOSE] Closing BUY Basket | Positions: %d | Lots: %.2f | Profit: $%.2f",
-                            buyCount, totalLots, buyProfit));
          CloseBasketPositions(POSITION_TYPE_BUY);
          g_buy_peak_profit = 0.0;
          g_buy_first_price = 0.0;
          g_last_basket_close_time = TimeCurrent();
+         CheckDailyReset(true);
       }
    }
    else
@@ -627,14 +753,8 @@ void ManageBasketExits()
    }
 
    // 2. SELL Basket Exits
-   int sellCount = CountBasketPositions(POSITION_TYPE_SELL);
-   if(sellCount > 0)
+   if(g_sell_basket.count > 0)
    {
-      double sellProfit = CalculateBasketProfit(POSITION_TYPE_SELL);
-      double totalLots = 0;
-      double sellBE = CalculateWeightedAverageEntry(POSITION_TYPE_SELL, totalLots);
-      double atrM15 = GetATR_M15_Price();
-
       bool exitTriggered = false;
 
       if(InpTPMode == TP_MODE_HYBRID || InpTPMode == TP_MODE_PERCENT_BALANCE || InpTPMode == TP_MODE_FIXED_USD)
@@ -643,30 +763,27 @@ void ManageBasketExits()
          if(InpTPMode == TP_MODE_PERCENT_BALANCE || InpTPMode == TP_MODE_HYBRID)
             targetUSD = g_account.Balance() * (InpBasketTPPercent / 100.0);
 
-         if(sellProfit >= targetUSD)
+         if(g_sell_basket.profit >= targetUSD)
             exitTriggered = true;
       }
 
       if(InpTPMode == TP_MODE_HYBRID || InpTPMode == TP_MODE_ATR_DISTANCE)
       {
-         double tpPrice = sellBE - (atrM15 * InpBasketTP_ATR_Factor);
-         if(g_symbol.Ask() <= tpPrice && sellProfit > 0)
+         double tpPrice = g_sell_basket.breakeven - (g_cached_atr_m15 * InpBasketTP_ATR_Factor);
+         if(g_symbol.Ask() <= tpPrice && g_sell_basket.profit > 0)
             exitTriggered = true;
       }
 
       if(InpUseBasketTrailing)
       {
-         if(sellProfit >= InpTrailStartUSD)
+         if(g_sell_basket.profit >= InpTrailStartUSD)
          {
-            if(sellProfit > g_sell_peak_profit)
-               g_sell_peak_profit = sellProfit;
+            if(g_sell_basket.profit > g_sell_peak_profit)
+               g_sell_peak_profit = g_sell_basket.profit;
 
             double trailingFloor = g_sell_peak_profit - InpTrailStepUSD;
-            if(sellProfit <= trailingFloor && trailingFloor > 0)
-            {
+            if(g_sell_basket.profit <= trailingFloor && trailingFloor > 0)
                exitTriggered = true;
-               Print(StringFormat("[TRAIL EXIT] SELL Basket locked profit! Peak: $%.2f | Exit: $%.2f", g_sell_peak_profit, sellProfit));
-            }
          }
          else
          {
@@ -676,23 +793,18 @@ void ManageBasketExits()
 
       if(InpUseEmergencyATR_SL && g_sell_first_price > 0)
       {
-         double atrH1 = GetATR_H1_Price();
-         double emergencySL = g_sell_first_price + (atrH1 * InpEmergencySL_ATR_Mult);
+         double emergencySL = g_sell_first_price + (g_cached_atr_h1 * InpEmergencySL_ATR_Mult);
          if(g_symbol.Ask() >= emergencySL)
-         {
-            Print(StringFormat("[EMERGENCY SL] SELL Basket hit Emergency SL: %.2f (Current: %.2f)", emergencySL, g_symbol.Ask()));
             exitTriggered = true;
-         }
       }
 
       if(exitTriggered)
       {
-         Print(StringFormat("[BASKET CLOSE] Closing SELL Basket | Positions: %d | Lots: %.2f | Profit: $%.2f",
-                            sellCount, totalLots, sellProfit));
          CloseBasketPositions(POSITION_TYPE_SELL);
          g_sell_peak_profit = 0.0;
          g_sell_first_price = 0.0;
          g_last_basket_close_time = TimeCurrent();
+         CheckDailyReset(true);
       }
    }
    else
@@ -709,41 +821,32 @@ bool CheckTrendEscape(ENUM_POSITION_TYPE posType)
 {
    if(!InpUseTrendEscape) return false;
 
-   double adxBuf[1];
-   if(CopyBuffer(g_h_adx_h1, 0, 0, 1, adxBuf) <= 0) return false;
-
-   double emaFast[1], emaSlow[1];
-   if(CopyBuffer(g_h_ema_fast_h1, 0, 0, 1, emaFast) <= 0 || CopyBuffer(g_h_ema_slow_h1, 0, 0, 1, emaSlow) <= 0)
-      return false;
-
    if(posType == POSITION_TYPE_BUY)
    {
-      // Strong Downtrend Developing while holding Buy
-      if(adxBuf[0] >= InpTrendEscapeADX && emaFast[0] < emaSlow[0] && g_symbol.Bid() < emaSlow[0])
+      if(g_cached_adx_h1 >= InpTrendEscapeADX && g_cached_ema_fast < g_cached_ema_slow && g_symbol.Bid() < g_cached_ema_slow)
       {
-         double loss = MathAbs(CalculateBasketProfit(POSITION_TYPE_BUY));
-         if(loss >= InpTrendEscapeMaxLossUSD && CalculateBasketProfit(POSITION_TYPE_BUY) < 0)
+         double loss = MathAbs(g_buy_basket.profit);
+         if(loss >= InpTrendEscapeMaxLossUSD && g_buy_basket.profit < 0)
          {
-            Print(StringFormat("[TREND ESCAPE CUT] Heavy Downtrend detected on H1 (ADX=%.1f). Cutting BUY Basket to protect account!", adxBuf[0]));
             CloseBasketPositions(POSITION_TYPE_BUY);
             g_last_basket_close_time = TimeCurrent();
+            CheckDailyReset(true);
          }
-         return true; // Freeze further grid buys
+         return true;
       }
    }
    else if(posType == POSITION_TYPE_SELL)
    {
-      // Strong Uptrend Developing while holding Sell
-      if(adxBuf[0] >= InpTrendEscapeADX && emaFast[0] > emaSlow[0] && g_symbol.Ask() > emaSlow[0])
+      if(g_cached_adx_h1 >= InpTrendEscapeADX && g_cached_ema_fast > g_cached_ema_slow && g_symbol.Ask() > g_cached_ema_slow)
       {
-         double loss = MathAbs(CalculateBasketProfit(POSITION_TYPE_SELL));
-         if(loss >= InpTrendEscapeMaxLossUSD && CalculateBasketProfit(POSITION_TYPE_SELL) < 0)
+         double loss = MathAbs(g_sell_basket.profit);
+         if(loss >= InpTrendEscapeMaxLossUSD && g_sell_basket.profit < 0)
          {
-            Print(StringFormat("[TREND ESCAPE CUT] Heavy Uptrend detected on H1 (ADX=%.1f). Cutting SELL Basket to protect account!", adxBuf[0]));
             CloseBasketPositions(POSITION_TYPE_SELL);
             g_last_basket_close_time = TimeCurrent();
+            CheckDailyReset(true);
          }
-         return true; // Freeze further grid sells
+         return true;
       }
    }
 
@@ -761,8 +864,6 @@ bool ProcessSafetyGuards()
    // 1. Equity Hard Stop
    if(InpEquityStopPercent > 0 && currentDD >= InpEquityStopPercent)
    {
-      Print(StringFormat("[CRITICAL] Equity Drawdown Hard Stop! DD: %.2f%% >= Limit: %.2f%%. Closing ALL positions!",
-                         currentDD, InpEquityStopPercent));
       CloseAllPositions();
       g_equity_stop_hit = true;
       Alert(StringFormat("[CRITICAL] XAUUSD EA Equity Stop Hit (%.2f%% DD). Trading PAUSED.", currentDD));
@@ -772,7 +873,6 @@ bool ProcessSafetyGuards()
    // 2. Margin Emergency Cut
    if(marginLevel > 0 && marginLevel < InpMarginEmergencyCut)
    {
-      Print(StringFormat("[MARGIN EMERGENCY] Margin Level %.1f%% < %.1f%%. Trimming worst loss order!", marginLevel, InpMarginEmergencyCut));
       CutWorstOrder();
       return false;
    }
@@ -785,7 +885,6 @@ bool ProcessSafetyGuards()
       {
          if(!g_daily_lockout)
          {
-            Print(StringFormat("[DAILY LOSS] Hit -$%.2f (%.1f%%). Pausing today's trading.", MathAbs(g_realized_pl_day), InpDailyLossLimitPct));
             g_daily_lockout = true;
             Alert("[DAILY LIMIT] Daily Max Loss Limit reached. Trading paused for today.");
          }
@@ -800,7 +899,6 @@ bool ProcessSafetyGuards()
       {
          if(!g_daily_lockout)
          {
-            Print(StringFormat("[DAILY GOAL] Profit Target reached: +$%.2f (%.1f%%). Locking profits for today.", g_realized_pl_day, InpDailyProfitTargetPct));
             g_daily_lockout = true;
             Alert("[DAILY GOAL] Daily Profit Target hit! Profits locked for today.");
          }
@@ -820,28 +918,9 @@ bool OpenOrder(ENUM_POSITION_TYPE posType, double lot, int level)
 
    bool success = false;
    if(posType == POSITION_TYPE_BUY)
-   {
-      double price = g_symbol.Ask();
-      success = g_trade.Buy(lot, _Symbol, price, 0, 0, comment);
-   }
+      success = g_trade.Buy(lot, _Symbol, g_symbol.Ask(), 0, 0, comment);
    else
-   {
-      double price = g_symbol.Bid();
-      success = g_trade.Sell(lot, _Symbol, price, 0, 0, comment);
-   }
-
-   if(success)
-   {
-      Print(StringFormat("[ORDER OPENED] %s Level %d | Lot: %.2f | Price: %.2f",
-                         (posType == POSITION_TYPE_BUY ? "BUY" : "SELL"), level, lot,
-                         (posType == POSITION_TYPE_BUY ? g_symbol.Ask() : g_symbol.Bid())));
-   }
-   else
-   {
-      Print(StringFormat("[ORDER FAILED] %s Level %d | Retcode: %d | %s",
-                         (posType == POSITION_TYPE_BUY ? "BUY" : "SELL"), level,
-                         g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription()));
-   }
+      success = g_trade.Sell(lot, _Symbol, g_symbol.Bid(), 0, 0, comment);
 
    return success;
 }
@@ -849,32 +928,11 @@ bool OpenOrder(ENUM_POSITION_TYPE posType, double lot, int level)
 //+------------------------------------------------------------------+
 //| CALCULATIONS & HELPERS                                           |
 //+------------------------------------------------------------------+
-double GetATR_M15_Price()
-{
-   if(g_h_atr_m15 == INVALID_HANDLE) return InpMinGridStepUSD;
-   double buf[1];
-   if(CopyBuffer(g_h_atr_m15, 0, 0, 1, buf) > 0)
-      return buf[0];
-   return InpMinGridStepUSD;
-}
-
-double GetATR_H1_Price()
-{
-   if(g_h_atr_h1 == INVALID_HANDLE) return 15.0;
-   double buf[1];
-   if(CopyBuffer(g_h_atr_h1, 0, 0, 1, buf) > 0)
-      return buf[0];
-   return 15.0;
-}
-
 double CalculateDynamicGridStepUSD()
 {
-   double atrUSD = GetATR_M15_Price();
-   double calculatedStep = atrUSD * InpGridATRMultiplier;
-
+   double calculatedStep = g_cached_atr_m15 * InpGridATRMultiplier;
    if(calculatedStep < InpMinGridStepUSD) calculatedStep = InpMinGridStepUSD;
    if(calculatedStep > InpMaxGridStepUSD) calculatedStep = InpMaxGridStepUSD;
-
    return calculatedStep;
 }
 
@@ -885,22 +943,8 @@ double CalculateNextLot(ENUM_POSITION_TYPE posType, int currentLevel)
 
    if(InpLotStrategy == LOT_STRAT_MILD_MULT)
    {
-      double lastLot = InpInitialLot;
-      datetime newest = 0;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         if(g_pos.SelectByIndex(i))
-         {
-            if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-            {
-               if(g_pos.Time() > newest)
-               {
-                  newest = g_pos.Time();
-                  lastLot = g_pos.Volume();
-               }
-            }
-         }
-      }
+      double lastLot = (posType == POSITION_TYPE_BUY) ? g_buy_basket.last_lot : g_sell_basket.last_lot;
+      if(lastLot <= 0) lastLot = InpInitialLot;
       double nextLot = lastLot * InpLotMultiplier;
       return MathMin(NormalizeLotSize(nextLot), InpMaxSingleLot);
    }
@@ -928,94 +972,6 @@ double NormalizeLotSize(double lot)
    if(lot < minLot) lot = minLot;
    if(lot > maxLot) lot = maxLot;
    return NormalizeDouble(lot, 2);
-}
-
-int CountBasketPositions(ENUM_POSITION_TYPE posType)
-{
-   int count = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-            count++;
-      }
-   }
-   return count;
-}
-
-double CalculateBasketProfit(ENUM_POSITION_TYPE posType)
-{
-   double profit = 0.0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-            profit += (g_pos.Profit() + g_pos.Swap() + g_pos.Commission());
-      }
-   }
-   return profit;
-}
-
-double CalculateWeightedAverageEntry(ENUM_POSITION_TYPE posType, double &totalLots)
-{
-   double sumPriceLot = 0.0;
-   totalLots = 0.0;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            double vol = g_pos.Volume();
-            sumPriceLot += (vol * g_pos.PriceOpen());
-            totalLots += vol;
-         }
-      }
-   }
-
-   if(totalLots > 0)
-      return NormalizeDouble(sumPriceLot / totalLots, _Digits);
-
-   return 0.0;
-}
-
-double GetTotalBasketVolume(ENUM_POSITION_TYPE posType)
-{
-   double totalVol = 0.0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-            totalVol += g_pos.Volume();
-      }
-   }
-   return totalVol;
-}
-
-double GetLastPositionPrice(ENUM_POSITION_TYPE posType)
-{
-   datetime newest = 0;
-   double price = 0.0;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(g_pos.SelectByIndex(i))
-      {
-         if(g_pos.Symbol() == _Symbol && g_pos.Magic() == InpMagicNumber && g_pos.PositionType() == posType)
-         {
-            if(g_pos.Time() > newest)
-            {
-               newest = g_pos.Time();
-               price = g_pos.PriceOpen();
-            }
-         }
-      }
-   }
-   return price;
 }
 
 void CloseBasketPositions(ENUM_POSITION_TYPE posType)
@@ -1063,10 +1019,7 @@ void CutWorstOrder()
    }
 
    if(worstTicket > 0)
-   {
-      Print(StringFormat("[CUT WORST ORDER] Closed Ticket #%d with P/L: $%.2f", worstTicket, worstPnl));
       g_trade.PositionClose(worstTicket);
-   }
 }
 
 double CalculateAccountDrawdownPercent()
@@ -1080,7 +1033,7 @@ double CalculateAccountDrawdownPercent()
    return ((balance - equity) / balance) * 100.0;
 }
 
-void CheckDailyReset()
+void CheckDailyReset(bool forceRecalculate)
 {
    MqlDateTime dt;
    TimeCurrent(dt);
@@ -1090,8 +1043,10 @@ void CheckDailyReset()
    {
       ResetDailyState();
       g_last_day_reset = dayStart;
+      forceRecalculate = true;
    }
-   else
+
+   if(forceRecalculate)
    {
       HistorySelect(dayStart, TimeCurrent());
       double pnl = 0.0;
@@ -1130,25 +1085,9 @@ void RenderHUD()
    bool buyPass = CheckEntryFilters(POSITION_TYPE_BUY, buyReason);
    bool sellPass = CheckEntryFilters(POSITION_TYPE_SELL, sellReason);
 
-   int buyCount = CountBasketPositions(POSITION_TYPE_BUY);
-   int sellCount = CountBasketPositions(POSITION_TYPE_SELL);
-   double buyProfit = CalculateBasketProfit(POSITION_TYPE_BUY);
-   double sellProfit = CalculateBasketProfit(POSITION_TYPE_SELL);
-   double buyVol = GetTotalBasketVolume(POSITION_TYPE_BUY);
-   double sellVol = GetTotalBasketVolume(POSITION_TYPE_SELL);
-   double totalLots = 0;
-   double buyBE = CalculateWeightedAverageEntry(POSITION_TYPE_BUY, totalLots);
-   double sellBE = CalculateWeightedAverageEntry(POSITION_TYPE_SELL, totalLots);
-
    double currentDD = CalculateAccountDrawdownPercent();
    double marginLevel = g_account.MarginLevel();
-   double atrUSD = GetATR_M15_Price();
    double stepUSD = CalculateDynamicGridStepUSD();
-
-   double rsiVal = 0.0, adxVal = 0.0;
-   double rsiBuf[1], adxBuf[1];
-   if(CopyBuffer(g_h_rsi_m15, 0, 0, 1, rsiBuf) > 0) rsiVal = rsiBuf[0];
-   if(CopyBuffer(g_h_adx_h1, 0, 0, 1, adxBuf) > 0) adxVal = adxBuf[0];
 
    string status = "ACTIVE";
    if(g_equity_stop_hit) status = "EQUITY_STOP_HIT";
@@ -1157,26 +1096,26 @@ void RenderHUD()
 
    string dash = "";
    dash += "=========================================================\n";
-   dash += "   XAUUSD ADAPTIVE MEAN-REVERSION GRID EA  v1.00\n";
+   dash += "   XAUUSD ADAPTIVE MEAN-REVERSION GRID EA  v1.10\n";
    dash += StringFormat("   Status: [%s] | Magic: %d | Symbol: %s\n", status, InpMagicNumber, _Symbol);
    dash += "=========================================================\n";
-   dash += StringFormat(" [Market Regime] H1 ADX: %.1f (Max: %.1f) | M15 ATR: $%.2f | Step: $%.2f\n", adxVal, InpMaxADXForEntry, atrUSD, stepUSD);
-   dash += StringFormat(" [Indicators]    M15 RSI(14): %.1f | Spread: %d pts\n", rsiVal, g_symbol.Spread());
+   dash += StringFormat(" [Market Regime] H1 ADX: %.1f (Max: %.1f) | M15 ATR: $%.2f | Step: $%.2f\n", g_cached_adx_h1, InpMaxADXForEntry, g_cached_atr_m15, stepUSD);
+   dash += StringFormat(" [Indicators]    M15 RSI(14): %.1f | Spread: %d pts\n", g_cached_rsi, g_symbol.Spread());
    dash += StringFormat(" [Entry Signals] Buy: [%s] | Sell: [%s]\n", (buyPass ? "READY" : buyReason), (sellPass ? "READY" : sellReason));
    dash += "---------------------------------------------------------\n";
-   if(buyCount > 0)
+   if(g_buy_basket.count > 0)
    {
-      dash += StringFormat(" [BUY BASKET]  Levels: %d/%d | Lots: %.2f | Avg BE: %.2f | P/L: $%.2f\n", buyCount, InpMaxGridLevels, buyVol, buyBE, buyProfit);
+      dash += StringFormat(" [BUY BASKET]  Levels: %d/%d | Lots: %.2f | Avg BE: %.2f | P/L: $%.2f\n", g_buy_basket.count, InpMaxGridLevels, g_buy_basket.total_lots, g_buy_basket.breakeven, g_buy_basket.profit);
       if(g_buy_peak_profit > 0)
          dash += StringFormat("               Trailing -> Peak: $%.2f (Floor: $%.2f)\n", g_buy_peak_profit, g_buy_peak_profit - InpTrailStepUSD);
    }
-   if(sellCount > 0)
+   if(g_sell_basket.count > 0)
    {
-      dash += StringFormat(" [SELL BASKET] Levels: %d/%d | Lots: %.2f | Avg BE: %.2f | P/L: $%.2f\n", sellCount, InpMaxGridLevels, sellVol, sellBE, sellProfit);
+      dash += StringFormat(" [SELL BASKET] Levels: %d/%d | Lots: %.2f | Avg BE: %.2f | P/L: $%.2f\n", g_sell_basket.count, InpMaxGridLevels, g_sell_basket.total_lots, g_sell_basket.breakeven, g_sell_basket.profit);
       if(g_sell_peak_profit > 0)
          dash += StringFormat("               Trailing -> Peak: $%.2f (Floor: $%.2f)\n", g_sell_peak_profit, g_sell_peak_profit - InpTrailStepUSD);
    }
-   if(buyCount == 0 && sellCount == 0)
+   if(g_buy_basket.count == 0 && g_sell_basket.count == 0)
    {
       dash += " [BASKET STATUS] No active baskets. Scanning for mean-reversion setups...\n";
    }
